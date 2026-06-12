@@ -1,32 +1,27 @@
-﻿const LABELS = [
-  { id: "face_outline", name: "face outline", color: "#d84b2a", defaultClosed: true },
-  { id: "left_eye", name: "left eye", color: "#087e6b", defaultClosed: true },
-  { id: "right_eye", name: "right eye", color: "#0b6fb3", defaultClosed: true },
-  { id: "nose", name: "nose", color: "#d0a320", defaultClosed: false },
-  { id: "mouth", name: "mouth", color: "#a33f6b", defaultClosed: true },
-  { id: "left_eyebrow", name: "left eyebrow", color: "#6f5bb7", defaultClosed: false },
-  { id: "right_eyebrow", name: "right eyebrow", color: "#b46a21", defaultClosed: false },
-  { id: "left_ear", name: "left ear", color: "#2f8f45", defaultClosed: true },
-  { id: "right_ear", name: "right ear", color: "#8a6b2c", defaultClosed: true },
-];
-
-const MIN_OPEN_POINTS = 2;
-const MIN_CLOSED_POINTS = 3;
-const POINT_RADIUS = 5;
-const HIT_RADIUS = 10;
-const LINE_HIT_RADIUS = 18;
-const SOFT_DRAG_MIN_DISTANCE = 6;
-const SOFT_DRAG_MAX_DISTANCE = 32;
-const SOFT_DRAG_RADIUS_RATIO = 0.75;
-const DENSIFY_SPACING = 10;
-const MAX_CONTROL_HANDLES = 180;
-const DRAFT_STORAGE_KEY = "face-contour-lab-draft-v1";
-const DRAFT_DB_NAME = "face-contour-lab";
-const DRAFT_DB_VERSION = 1;
-const DRAFT_STORE_NAME = "draft-assets";
-const DRAFT_IMAGE_KEY = "current-image";
-const MAX_LEGACY_DRAFT_BYTES = 1500000;
-const DRAFT_SAVE_DELAY_MS = 200;
+﻿import {
+  DENSIFY_SPACING,
+  DRAFT_SAVE_DELAY_MS,
+  DRAFT_STORAGE_KEY,
+  HIT_RADIUS,
+  LABELS,
+  LINE_HIT_RADIUS,
+  MAX_CONTROL_HANDLES,
+  MAX_LEGACY_DRAFT_BYTES,
+  MIN_CLOSED_POINTS,
+  MIN_OPEN_POINTS,
+  POINT_RADIUS,
+  SOFT_DRAG_MAX_DISTANCE,
+  SOFT_DRAG_MIN_DISTANCE,
+  SOFT_DRAG_RADIUS_RATIO,
+} from "./config.js";
+import * as geometry from "./geometry.js";
+import * as storage from "./storage.js";
+import {
+  buildAnnotationExport,
+  getImageSize,
+  normalizeImportedContours as normalizeImportedContourData,
+} from "./exporter.js";
+import { drawAnnotationCanvas, fitCanvasToImage } from "./renderer.js";
 const state = {
   image: null,
   imageDataUrl: "",
@@ -85,6 +80,11 @@ const elements = {
 };
 
 const ctx = elements.canvas.getContext("2d");
+let drawFrameId = null;
+
+function getCurrentImageSize() {
+  return getImageSize(state.image);
+}
 
 function getLabel(labelId) {
   return LABELS.find((label) => label.id === labelId) || LABELS[0];
@@ -107,66 +107,16 @@ function setStatus(message, isError = false) {
   elements.statusText.style.color = isError ? "var(--hot)" : "var(--muted)";
 }
 
-function openDraftDatabase() {
-  return new Promise((resolve, reject) => {
-    if (!window.indexedDB) {
-      reject(new Error("IndexedDB is not available."));
-      return;
-    }
-    const request = window.indexedDB.open(DRAFT_DB_NAME, DRAFT_DB_VERSION);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(DRAFT_STORE_NAME)) {
-        database.createObjectStore(DRAFT_STORE_NAME);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("IndexedDB could not be opened."));
-  });
-}
-
-async function withDraftStore(mode, callback) {
-  const database = await openDraftDatabase();
-  try {
-    return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(DRAFT_STORE_NAME, mode);
-      const store = transaction.objectStore(DRAFT_STORE_NAME);
-      let callbackResult;
-      transaction.oncomplete = () => resolve(callbackResult);
-      transaction.onerror = () =>
-        reject(transaction.error || new Error("Draft asset transaction failed."));
-      transaction.onabort = () =>
-        reject(transaction.error || new Error("Draft asset transaction aborted."));
-      callbackResult = callback(store);
-    });
-  } finally {
-    database.close();
-  }
-}
-
 function putStoredImage(dataUrl) {
-  return withDraftStore("readwrite", (store) => {
-    store.put({ dataUrl, updatedAt: Date.now() }, DRAFT_IMAGE_KEY);
-  });
+  return storage.putStoredImage(dataUrl);
 }
 
 function getStoredImage() {
-  return withDraftStore(
-    "readonly",
-    (store) =>
-      new Promise((resolve, reject) => {
-        const request = store.get(DRAFT_IMAGE_KEY);
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () =>
-          reject(request.error || new Error("Stored image could not be read."));
-      }),
-  );
+  return storage.getStoredImage();
 }
 
 function deleteStoredImage() {
-  return withDraftStore("readwrite", (store) => {
-    store.delete(DRAFT_IMAGE_KEY);
-  });
+  return storage.deleteStoredImage();
 }
 
 function clearStoredDraft() {
@@ -175,7 +125,7 @@ function clearStoredDraft() {
     state.draftSaveTimer = null;
   }
   try {
-    window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+    storage.removeStoredDraft(DRAFT_STORAGE_KEY);
   } catch (error) {
     console.warn("Stored draft could not be cleared.", error);
   }
@@ -223,7 +173,7 @@ async function persistDraftNow() {
       await putStoredImage(state.imageDataUrl);
       state.imagePersisted = true;
     }
-    window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    storage.writeStoredDraft(DRAFT_STORAGE_KEY, draft);
   } catch (error) {
     state.draftSaveBlocked = true;
     console.warn("Draft could not be saved.", error);
@@ -248,15 +198,11 @@ function createId() {
 }
 
 function finiteNumber(value, fallback = 0) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
+  return geometry.finiteNumber(value, fallback);
 }
 
 function cloneContours(contours = state.contours) {
-  return contours.map((contour) => ({
-    ...contour,
-    points: contour.points.map((point) => ({ ...point })),
-  }));
+  return geometry.cloneContours(contours);
 }
 
 function snapshotContours() {
@@ -305,25 +251,12 @@ function redo() {
   setStatus("Redone.");
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
 function clampPoint(point) {
-  if (!state.image) {
-    return point;
-  }
-  return {
-    x: Math.round(clamp(finiteNumber(point.x), 0, state.image.naturalWidth)),
-    y: Math.round(clamp(finiteNumber(point.y), 0, state.image.naturalHeight)),
-  };
+  return geometry.clampPointToImage(point, getCurrentImageSize());
 }
 
 function normalizePoint(point) {
-  return clampPoint({
-    x: finiteNumber(point.x),
-    y: finiteNumber(point.y),
-  });
+  return geometry.normalizePointToImage(point, getCurrentImageSize());
 }
 
 function toCanvasPoint(event) {
@@ -334,200 +267,30 @@ function toCanvasPoint(event) {
   });
 }
 
-function toDisplayPoint(point) {
-  return {
-    x: point.x * state.scale,
-    y: point.y * state.scale,
-  };
-}
-
 function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function lerp(start, end, t) {
-  return start + (end - start) * t;
-}
-
-function interpolatePoint(start, end, t) {
-  return {
-    x: lerp(start.x, end.x, t),
-    y: lerp(start.y, end.y, t),
-  };
-}
-
-function getSegmentDistance(point, start, end) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) {
-    return { distance: distance(point, start), t: 0, projection: { ...start } };
-  }
-  const rawT = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
-  const t = clamp(rawT, 0, 1);
-  const projection = interpolatePoint(start, end, t);
-  return { distance: distance(point, projection), t, projection };
-}
-
-function getContourSegments(contour) {
-  const segments = [];
-  const lastIndex = contour.closed ? contour.points.length : contour.points.length - 1;
-  for (let index = 0; index < lastIndex; index += 1) {
-    const nextIndex = (index + 1) % contour.points.length;
-    if (contour.points[index] && contour.points[nextIndex]) {
-      segments.push({ index, nextIndex });
-    }
-  }
-  return segments;
+  return geometry.distance(a, b);
 }
 
 function densifyPoints(points, closed, spacing = DENSIFY_SPACING) {
-  if (points.length < 2) {
-    return points.map((point) => ({ ...point }));
-  }
-  const result = [];
-  const segmentCount = closed ? points.length : points.length - 1;
-  for (let index = 0; index < segmentCount; index += 1) {
-    const start = points[index];
-    const end = points[(index + 1) % points.length];
-    const segmentLength = distance(start, end);
-    const steps = Math.max(1, Math.ceil(segmentLength / spacing));
-    result.push({ ...start });
-    for (let step = 1; step < steps; step += 1) {
-      result.push(interpolatePoint(start, end, step / steps));
-    }
-  }
-  if (!closed) {
-    result.push({ ...points[points.length - 1] });
-  }
-  return result.map(normalizePoint);
-}
-
-function getPathOffsets(contour) {
-  const offsets = [0];
-  for (let index = 1; index < contour.points.length; index += 1) {
-    offsets[index] = offsets[index - 1] + distance(contour.points[index - 1], contour.points[index]);
-  }
-  const perimeter = contour.closed
-    ? offsets[offsets.length - 1] +
-      distance(contour.points[contour.points.length - 1], contour.points[0])
-    : offsets[offsets.length - 1];
-  return { offsets, perimeter };
-}
-
-function getAnchorOffset(contour, interaction) {
-  const { offsets } = getPathOffsets(contour);
-  if (interaction.segmentIndex !== undefined) {
-    const start = contour.points[interaction.segmentIndex];
-    const end = contour.points[(interaction.segmentIndex + 1) % contour.points.length];
-    return offsets[interaction.segmentIndex] + distance(start, end) * interaction.segmentT;
-  }
-  return offsets[interaction.pointIndex] || 0;
-}
-
-function getContourPathDistance(contour, pointIndex, anchorOffset) {
-  const { offsets, perimeter } = getPathOffsets(contour);
-  const directDistance = Math.abs((offsets[pointIndex] || 0) - anchorOffset);
-  if (!contour.closed || perimeter === 0) {
-    return directDistance;
-  }
-  return Math.min(directDistance, perimeter - directDistance);
-}
-
-function getSoftWeight(pathDistance, radius) {
-  if (pathDistance > radius) {
-    return 0;
-  }
-  return 0.5 + 0.5 * Math.cos((Math.PI * pathDistance) / radius);
-}
-
-function getSoftDragLimit() {
-  return clamp(
-    state.softRadius * SOFT_DRAG_RADIUS_RATIO,
-    SOFT_DRAG_MIN_DISTANCE,
-    SOFT_DRAG_MAX_DISTANCE,
-  );
-}
-
-function clampVector(dx, dy, maxLength) {
-  const length = Math.hypot(dx, dy);
-  if (!Number.isFinite(length) || length === 0 || length <= maxLength) {
-    return { dx, dy, clamped: false };
-  }
-  const scale = maxLength / length;
-  return {
-    dx: dx * scale,
-    dy: dy * scale,
-    clamped: true,
-  };
-}
-
-function getContourBounds(contour) {
-  const xs = contour.points.map((point) => point.x);
-  const ys = contour.points.map((point) => point.y);
-  return {
-    left: Math.min(...xs),
-    top: Math.min(...ys),
-    right: Math.max(...xs),
-    bottom: Math.max(...ys),
-  };
-}
-
-function pointInPolygon(point, points) {
-  let inside = false;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i) {
-    const pi = points[i];
-    const pj = points[j];
-    const intersects =
-      pi.y > point.y !== pj.y > point.y &&
-      point.x < ((pj.x - pi.x) * (point.y - pi.y)) / (pj.y - pi.y) + pi.x;
-    if (intersects) {
-      inside = !inside;
-    }
-  }
-  return inside;
+  return geometry.densifyPoints(points, closed, {
+    spacing,
+    imageSize: getCurrentImageSize(),
+  });
 }
 
 function hitFilledContour(point) {
-  for (let i = state.contours.length - 1; i >= 0; i -= 1) {
-    const contour = state.contours[i];
-    if (contour.closed && pointInPolygon(point, contour.points)) {
-      return { type: "contour", contour };
-    }
-  }
-  return null;
+  return geometry.hitFilledContour(state.contours, point);
 }
 
 function hitTest(point) {
-  for (let i = state.contours.length - 1; i >= 0; i -= 1) {
-    const contour = state.contours[i];
-    if (state.showPoints) {
-      for (let pointIndex = 0; pointIndex < contour.points.length; pointIndex += 1) {
-        if (distance(point, contour.points[pointIndex]) <= HIT_RADIUS / state.scale) {
-          return { type: "vertex", contour, pointIndex };
-        }
-      }
-    }
-    for (const segment of getContourSegments(contour)) {
-      const hit = getSegmentDistance(
-        point,
-        contour.points[segment.index],
-        contour.points[segment.nextIndex],
-      );
-      if (hit.distance <= LINE_HIT_RADIUS / state.scale) {
-        return {
-          type: "edge",
-          contour,
-          segmentIndex: segment.index,
-          segmentT: hit.t,
-        };
-      }
-    }
-    if (contour.closed && pointInPolygon(point, contour.points)) {
-      return { type: "contour", contour };
-    }
-  }
-  return null;
+  return geometry.hitTestContours({
+    contours: state.contours,
+    point,
+    showPoints: state.showPoints,
+    scale: state.scale,
+    hitRadius: HIT_RADIUS,
+    lineHitRadius: LINE_HIT_RADIUS,
+  });
 }
 
 function syncModeControls() {
@@ -637,28 +400,12 @@ function densifySelectedContour() {
 }
 
 function buildExport() {
-  const image = state.image
-    ? {
-        name: state.fileName,
-        width: state.image.naturalWidth,
-        height: state.image.naturalHeight,
-      }
-    : null;
-  return {
-    version: "face-contour-annotator-v1",
-    image,
-    labels: LABELS.map(({ id, name, defaultClosed }) => ({ id, name, defaultClosed })),
-    contours: state.contours.map((contour) => ({
-      id: contour.id,
-      label: contour.label,
-      closed: Boolean(contour.closed),
-      shape_type: contour.closed ? "polygon" : "linestrip",
-      points: contour.points.map((point) => ({
-        x: Math.round(point.x),
-        y: Math.round(point.y),
-      })),
-    })),
-  };
+  return buildAnnotationExport({
+    image: state.image,
+    fileName: state.fileName,
+    labels: LABELS,
+    contours: state.contours,
+  });
 }
 
 function updateJsonOutput() {
@@ -715,7 +462,7 @@ function renderContourList() {
   }
   state.contours.forEach((contour, index) => {
     const label = getLabel(contour.label);
-    const bounds = getContourBounds(contour);
+    const bounds = geometry.getContourBounds(contour);
     const item = document.createElement("article");
     item.className = "contour-item";
     item.classList.toggle("is-selected", contour.id === state.selectedId);
@@ -763,153 +510,42 @@ function renderContourList() {
   });
 }
 
-function drawSmoothPath(displayPoints, closed) {
-  if (!displayPoints.length) {
-    return;
-  }
-  ctx.beginPath();
-  if (displayPoints.length < 3) {
-    ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-    displayPoints.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
-    return;
-  }
-  if (closed) {
-    const last = displayPoints[displayPoints.length - 1];
-    const first = displayPoints[0];
-    ctx.moveTo((last.x + first.x) / 2, (last.y + first.y) / 2);
-    displayPoints.forEach((point, index) => {
-      const next = displayPoints[(index + 1) % displayPoints.length];
-      ctx.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
-    });
-    ctx.closePath();
-    return;
-  }
-  ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-  for (let index = 1; index < displayPoints.length - 1; index += 1) {
-    const point = displayPoints[index];
-    const next = displayPoints[index + 1];
-    ctx.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
-  }
-  const last = displayPoints[displayPoints.length - 1];
-  ctx.lineTo(last.x, last.y);
-}
-
-function drawContour(contour, isSelected = false) {
-  if (!contour.points.length) {
-    return;
-  }
-  const label = getLabel(contour.label);
-  const displayPoints = contour.points.map(toDisplayPoint);
-  ctx.save();
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  if (isSelected) {
-    drawSmoothPath(displayPoints, Boolean(contour.closed));
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.84)";
-    ctx.lineWidth = 8;
-    ctx.stroke();
-  }
-  drawSmoothPath(displayPoints, Boolean(contour.closed));
-  ctx.fillStyle = `${label.color}24`;
-  ctx.strokeStyle = label.color;
-  ctx.lineWidth = isSelected ? 4 : 2;
-  if (contour.closed) {
-    ctx.fill();
-  }
-  ctx.stroke();
-
-  const anchor = displayPoints[0];
-  ctx.font = "12px Aptos, Segoe UI, sans-serif";
-  const textWidth = ctx.measureText(label.name).width;
-  const tagWidth = Math.max(48, textWidth + 12);
-  const tagY = Math.max(0, anchor.y - 24);
-  ctx.fillStyle = label.color;
-  ctx.fillRect(anchor.x, tagY, tagWidth, 20);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(label.name, anchor.x + 6, tagY + 14);
-
-  if (isSelected && state.showPoints) {
-    const handleStride = Math.max(1, Math.ceil(displayPoints.length / MAX_CONTROL_HANDLES));
-    displayPoints.forEach((point, pointIndex) => {
-      const isEndpoint = !contour.closed && (
-        pointIndex === 0 || pointIndex === displayPoints.length - 1
-      );
-      if (pointIndex % handleStride !== 0 && !isEndpoint) {
-        return;
-      }
-      ctx.beginPath();
-      ctx.fillStyle = pointIndex === 0 ? "#fff" : label.color;
-      ctx.strokeStyle = label.color;
-      ctx.lineWidth = 2;
-      ctx.arc(point.x, point.y, POINT_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    });
-  }
-  ctx.restore();
-}
-
-function drawDraft() {
-  if (!state.draftPoints.length) {
-    return;
-  }
-  const label = getLabel(state.activeLabel);
-  const displayPoints = state.draftPoints.map(toDisplayPoint);
-  const hoverPoint = state.hoverPoint ? toDisplayPoint(state.hoverPoint) : null;
-  ctx.save();
-  ctx.strokeStyle = label.color;
-  ctx.fillStyle = label.color;
-  ctx.lineWidth = 2;
-  ctx.setLineDash([8, 5]);
-  ctx.beginPath();
-  ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-  displayPoints.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
-  if (hoverPoint) {
-    ctx.lineTo(hoverPoint.x, hoverPoint.y);
-  }
-  ctx.stroke();
-  ctx.setLineDash([]);
-  displayPoints.forEach((point, pointIndex) => {
-    ctx.beginPath();
-    ctx.fillStyle = pointIndex === 0 ? "#fff" : label.color;
-    ctx.strokeStyle = label.color;
-    ctx.arc(point.x, point.y, POINT_RADIUS, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+function drawCanvasNow() {
+  drawFrameId = null;
+  drawAnnotationCanvas({
+    canvas: elements.canvas,
+    ctx,
+    image: state.image,
+    scale: state.scale,
+    contours: state.contours,
+    selectedId: state.selectedId,
+    draftPoints: state.draftPoints,
+    hoverPoint: state.hoverPoint,
+    activeLabel: state.activeLabel,
+    labels: LABELS,
+    showPoints: state.showPoints,
+    pointRadius: POINT_RADIUS,
+    maxControlHandles: MAX_CONTROL_HANDLES,
   });
-  ctx.restore();
 }
 
 function drawCanvas() {
-  const dpr = window.devicePixelRatio || 1;
-  const cssWidth = elements.canvas.clientWidth;
-  const cssHeight = elements.canvas.clientHeight;
-  elements.canvas.width = Math.max(1, Math.round(cssWidth * dpr));
-  elements.canvas.height = Math.max(1, Math.round(cssHeight * dpr));
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cssWidth, cssHeight);
-  if (!state.image) {
+  if (drawFrameId !== null) {
     return;
   }
-  ctx.drawImage(state.image, 0, 0, cssWidth, cssHeight);
-  state.contours.forEach((contour) => drawContour(contour, contour.id === state.selectedId));
-  drawDraft();
+  drawFrameId = window.requestAnimationFrame(drawCanvasNow);
 }
 
 function fitCanvas() {
-  if (!state.image) {
+  const scale = fitCanvasToImage({
+    canvas: elements.canvas,
+    stageShell: elements.stageShell,
+    image: state.image,
+  });
+  if (scale === null) {
     return;
   }
-  const maxWidth = Math.max(240, elements.stageShell.clientWidth - 36);
-  const maxHeight = Math.max(240, elements.stageShell.clientHeight - 36);
-  const scale = Math.min(
-    maxWidth / state.image.naturalWidth,
-    maxHeight / state.image.naturalHeight,
-    1.75,
-  );
-  state.scale = Math.max(0.08, scale);
-  elements.canvas.style.width = `${Math.round(state.image.naturalWidth * state.scale)}px`;
-  elements.canvas.style.height = `${Math.round(state.image.naturalHeight * state.scale)}px`;
+  state.scale = scale;
   drawCanvas();
 }
 
@@ -1001,7 +637,7 @@ async function restoreDraft() {
       setStatus("Saved draft cleared.");
       return false;
     }
-    const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+    const raw = storage.readStoredDraft(DRAFT_STORAGE_KEY);
     if (!raw) {
       return false;
     }
@@ -1073,25 +709,11 @@ function clampMoveDelta(contours, dx, dy) {
   if (!state.image || !contours.length) {
     return { dx, dy };
   }
-  let minDx = -Infinity;
-  let maxDx = Infinity;
-  let minDy = -Infinity;
-  let maxDy = Infinity;
-  contours.forEach((contour) => {
-    const bounds = getContourBounds(contour);
-    minDx = Math.max(minDx, -bounds.left);
-    maxDx = Math.min(maxDx, state.image.naturalWidth - bounds.right);
-    minDy = Math.max(minDy, -bounds.top);
-    maxDy = Math.min(maxDy, state.image.naturalHeight - bounds.bottom);
-  });
-  return {
-    dx: clamp(dx, minDx, maxDx),
-    dy: clamp(dy, minDy, maxDy),
-  };
+  return geometry.clampMoveDelta(contours, dx, dy, getCurrentImageSize());
 }
 
 function moveContourPoints(points, dx, dy) {
-  return points.map((point) => clampPoint({ x: point.x + dx, y: point.y + dy }));
+  return geometry.moveContourPoints(points, dx, dy, getCurrentImageSize());
 }
 
 function handleDrawPointerDown(point) {
@@ -1111,38 +733,21 @@ function handleDrawPointerDown(point) {
 }
 
 function applySoftMove(interaction, point) {
-  const limitedDelta = clampVector(
-    point.x - interaction.startPoint.x,
-    point.y - interaction.startPoint.y,
-    getSoftDragLimit(),
-  );
-  const rawDx = limitedDelta.dx;
-  const rawDy = limitedDelta.dy;
-  interaction.wasClamped = limitedDelta.clamped;
-  state.contours = interaction.startContours.map((contour) => {
-    if (contour.id !== interaction.contourId) {
-      return {
-        ...contour,
-        points: contour.points.map((item) => ({ ...item })),
-      };
-    }
-    const radius = Math.max(1, state.softRadius);
-    const anchorOffset = getAnchorOffset(contour, interaction);
-    return {
-      ...contour,
-      points: contour.points.map((item, pointIndex) => {
-        const pathDistance = getContourPathDistance(contour, pointIndex, anchorOffset);
-        const weight = getSoftWeight(pathDistance, radius);
-        if (weight === 0) {
-          return { ...item };
-        }
-        return clampPoint({
-          x: item.x + rawDx * weight,
-          y: item.y + rawDy * weight,
-        });
-      }),
-    };
+  const result = geometry.applySoftMoveToContours({
+    contours: interaction.startContours,
+    contourId: interaction.contourId,
+    interaction,
+    point,
+    softRadius: state.softRadius,
+    imageSize: getCurrentImageSize(),
+    softDragConfig: {
+      minDistance: SOFT_DRAG_MIN_DISTANCE,
+      maxDistance: SOFT_DRAG_MAX_DISTANCE,
+      radiusRatio: SOFT_DRAG_RADIUS_RATIO,
+    },
   });
+  interaction.wasClamped = result.wasClamped;
+  state.contours = result.contours;
 }
 
 function handleRefinePointerDown(point, event) {
@@ -1309,53 +914,14 @@ function downloadJson() {
   setStatus("JSON downloaded.");
 }
 
-function normalizeImportedPoint(point) {
-  if (Array.isArray(point)) {
-    return normalizePoint({ x: point[0], y: point[1] });
-  }
-  return normalizePoint(point);
-}
-
-function isValidImportedPoint(point) {
-  if (Array.isArray(point)) {
-    return (
-      point.length >= 2 &&
-      Number.isFinite(Number(point[0])) &&
-      Number.isFinite(Number(point[1]))
-    );
-  }
-  return (
-    point &&
-    Number.isFinite(Number(point.x)) &&
-    Number.isFinite(Number(point.y))
-  );
-}
-
 function normalizeImportedContours(contours) {
-  if (!Array.isArray(contours)) {
-    throw new Error("Missing contours array.");
-  }
-  return contours.map((contour) => {
-    const closed =
-      typeof contour.closed === "boolean"
-        ? contour.closed
-        : contour.shape_type === "linestrip"
-          ? false
-          : true;
-    if (!Array.isArray(contour.points) || contour.points.length < getMinimumPoints(closed)) {
-      throw new Error(`${getShapeName(closed)} does not have enough points.`);
-    }
-    if (!contour.points.every(isValidImportedPoint)) {
-      throw new Error("Contour points must be numeric.");
-    }
-    return {
-      id: typeof contour.id === "string" ? contour.id : createId(),
-      label: LABELS.some((label) => label.id === contour.label)
-        ? contour.label
-        : LABELS[0].id,
-      closed,
-      points: contour.points.map(normalizeImportedPoint),
-    };
+  return normalizeImportedContourData({
+    contours,
+    labels: LABELS,
+    imageSize: getCurrentImageSize(),
+    createId,
+    minOpenPoints: MIN_OPEN_POINTS,
+    minClosedPoints: MIN_CLOSED_POINTS,
   });
 }
 
