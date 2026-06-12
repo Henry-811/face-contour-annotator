@@ -33,6 +33,7 @@ const state = {
   hoverPoint: null,
   activeLabel: "face_outline",
   mode: "draw",
+  drawClosed: true,
   softDrag: true,
   showPoints: false,
   softRadius: 40,
@@ -64,6 +65,7 @@ const elements = {
   softRadiusValue: document.getElementById("softRadiusValue"),
   densifyButton: document.getElementById("densifyButton"),
   shapeHint: document.getElementById("shapeHint"),
+  shapeModeButtons: Array.from(document.querySelectorAll(".shape-mode-button")),
   contourList: document.getElementById("contourList"),
   contourCount: document.getElementById("contourCount"),
   jsonOutput: document.getElementById("jsonOutput"),
@@ -94,12 +96,16 @@ function getDefaultClosed(labelId = state.activeLabel) {
   return getLabel(labelId).defaultClosed;
 }
 
+function getDrawShapeName(closed = state.drawClosed) {
+  return closed ? "closed region" : "open line";
+}
+
 function getMinimumPoints(closed) {
   return closed ? MIN_CLOSED_POINTS : MIN_OPEN_POINTS;
 }
 
 function getShapeName(closed) {
-  return closed ? "closed shape" : "open curve";
+  return closed ? "closed region" : "open line";
 }
 
 function setStatus(message, isError = false) {
@@ -148,6 +154,7 @@ function buildStoredDraft() {
     },
     activeLabel: state.activeLabel,
     mode: state.mode,
+    drawClosed: state.drawClosed,
     softDrag: state.softDrag,
     showPoints: state.showPoints,
     softRadius: state.softRadius,
@@ -300,6 +307,23 @@ function syncModeControls() {
   elements.canvas.style.cursor = state.mode === "draw" ? "crosshair" : "default";
 }
 
+function syncShapeControls() {
+  elements.shapeModeButtons.forEach((button) => {
+    button.classList.toggle(
+      "is-active",
+      (button.dataset.shape === "closed") === state.drawClosed,
+    );
+  });
+}
+
+function setDrawClosed(closed) {
+  state.drawClosed = Boolean(closed);
+  syncShapeControls();
+  updateCommandState();
+  scheduleDraftSave();
+  setStatus(`Draw shape: ${getDrawShapeName()}.`);
+}
+
 function setMode(mode) {
   if (mode === "edit") {
     mode = "refine";
@@ -373,7 +397,7 @@ function finishDraft(closed = getDefaultClosed()) {
 }
 
 function finishDraftWithDefault() {
-  finishDraft(getDefaultClosed());
+  finishDraft(state.drawClosed);
 }
 
 function cancelDraft() {
@@ -420,13 +444,18 @@ function updateCommandState() {
   elements.downloadButton.disabled = !state.image;
   elements.finishOpenButton.disabled = state.draftPoints.length < MIN_OPEN_POINTS;
   elements.closeShapeButton.disabled = state.draftPoints.length < MIN_CLOSED_POINTS;
+  elements.finishOpenButton.textContent = "Finish Line";
+  elements.closeShapeButton.textContent = "Finish Region";
   elements.cancelDraftButton.disabled = state.draftPoints.length === 0;
   elements.densifyButton.disabled = !state.selectedId;
-  elements.shapeHint.textContent = `${getLabel(state.activeLabel).name} defaults to ${
-    getDefaultClosed() ? "closed shapes" : "open curves"
-  }.`;
+  elements.shapeHint.textContent = `${getLabel(state.activeLabel).name}: ${getDrawShapeName()} mode. ${
+    state.drawClosed
+      ? "Enter finishes a region; clicking the first point closes it."
+      : "Enter finishes a line; clicking the first point stays open."
+  }`;
   elements.showPointsToggle.checked = state.showPoints;
   elements.softRadiusValue.textContent = `${state.softRadius} px`;
+  syncShapeControls();
 }
 
 function renderLabels() {
@@ -440,7 +469,11 @@ function renderLabels() {
     button.innerHTML = `<span class="swatch" style="background:${label.color}"></span><span>${label.name}</span>`;
     button.addEventListener("click", () => {
       state.activeLabel = label.id;
+      if (!state.draftPoints.length) {
+        state.drawClosed = getDefaultClosed(label.id);
+      }
       renderLabels();
+      updateCommandState();
       scheduleDraftSave();
       setStatus(`Active label: ${label.name}.`);
     });
@@ -493,6 +526,7 @@ function renderContourList() {
       const previous = snapshotContours();
       contour.label = event.target.value;
       state.activeLabel = contour.label;
+      state.drawClosed = Boolean(contour.closed);
       commitChange(previous);
       renderAll();
     });
@@ -610,6 +644,10 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
     state.activeLabel = LABELS.some((label) => label.id === options.activeLabel)
       ? options.activeLabel
       : state.activeLabel;
+    state.drawClosed =
+      typeof options.drawClosed === "boolean"
+        ? options.drawClosed
+        : getDefaultClosed(state.activeLabel);
     state.mode = options.mode === "refine" || options.mode === "edit" ? "refine" : "draw";
     state.softDrag = typeof options.softDrag === "boolean" ? options.softDrag : true;
     state.showPoints = typeof options.showPoints === "boolean" ? options.showPoints : false;
@@ -653,6 +691,7 @@ async function restoreDraft() {
         selectedId: draft.selectedId,
         activeLabel: draft.activeLabel,
         mode: draft.mode,
+        drawClosed: draft.drawClosed,
         softDrag: draft.softDrag,
         showPoints: draft.showPoints,
         softRadius: draft.softRadius,
@@ -675,6 +714,7 @@ async function restoreDraft() {
       selectedId: draft.selectedId,
       activeLabel: draft.activeLabel,
       mode: draft.mode,
+      drawClosed: draft.drawClosed,
       softDrag: draft.softDrag,
       showPoints: draft.showPoints,
       softRadius: draft.softRadius,
@@ -719,6 +759,7 @@ function moveContourPoints(points, dx, dy) {
 function handleDrawPointerDown(point) {
   const firstPoint = state.draftPoints[0];
   if (
+    state.drawClosed &&
     firstPoint &&
     state.draftPoints.length >= MIN_CLOSED_POINTS &&
     distance(point, firstPoint) <= HIT_RADIUS / state.scale
@@ -1005,6 +1046,9 @@ function wireEvents() {
 
   document.querySelectorAll(".mode-button").forEach((button) => {
     button.addEventListener("click", () => setMode(button.dataset.mode));
+  });
+  elements.shapeModeButtons.forEach((button) => {
+    button.addEventListener("click", () => setDrawClosed(button.dataset.shape === "closed"));
   });
 
   elements.canvas.addEventListener("pointerdown", handlePointerDown);

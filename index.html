@@ -176,7 +176,15 @@
         gap: 8px;
       }
 
+      .shape-mode-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
       .mode-button.is-active,
+      .shape-mode-button.is-active,
       .label-button.is-active {
         border-color: var(--ink);
         background: var(--ink);
@@ -588,14 +596,20 @@
 
         <section class="section">
           <div class="section-title">Current contour</div>
+          <div class="shape-mode-grid">
+            <button class="shape-mode-button" data-shape="open" type="button">Open line</button>
+            <button class="shape-mode-button is-active" data-shape="closed" type="button">
+              Closed region
+            </button>
+          </div>
           <div class="button-row compact">
-            <button id="finishOpenButton" type="button">Finish Open</button>
+            <button id="finishOpenButton" type="button">Finish Line</button>
           </div>
           <div class="button-row" style="margin-top: 8px">
-            <button id="closeShapeButton" type="button">Close Shape</button>
+            <button id="closeShapeButton" type="button">Finish Region</button>
             <button id="cancelDraftButton" class="danger" type="button">Cancel</button>
           </div>
-          <div class="shape-hint" id="shapeHint">face outline defaults to closed shapes.</div>
+          <div class="shape-hint" id="shapeHint">face outline: closed region mode.</div>
         </section>
 
         <section class="section">

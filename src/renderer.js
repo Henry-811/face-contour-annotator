@@ -1,5 +1,15 @@
 import { getContourSegments, interpolatePoint } from "./geometry.js";
 
+const LABEL_GAP = 5;
+const LABEL_COLLISION_GAP = 3;
+const LABEL_HEIGHT = 18;
+const LABEL_MIN_WIDTH = 48;
+const LABEL_TEXT_PADDING_X = 12;
+const LABEL_STACK_LIMIT = 3;
+const LABEL_LINE_COLLISION_WEIGHT = 10000;
+const LABEL_LABEL_COLLISION_WEIGHT = 100000;
+const GEOMETRY_EPSILON = 0.000001;
+
 function getLabel(labels, labelId) {
   return labels.find((label) => label.id === labelId) || labels[0];
 }
@@ -26,21 +36,222 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function getLabelPlacement({ bounds, labelWidth, labelHeight, canvasWidth, canvasHeight }) {
-  const gap = 5;
-  const x = clamp(bounds.left, 0, Math.max(0, canvasWidth - labelWidth));
-  const topY = bounds.top - labelHeight - gap;
-  if (topY >= 0) {
-    return { x, y: topY };
+function getRectCenter(rect) {
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2,
+  };
+}
+
+function getClampedRect(rect, canvasWidth, canvasHeight) {
+  return {
+    ...rect,
+    x: clamp(rect.x, 0, Math.max(0, canvasWidth - rect.width)),
+    y: clamp(rect.y, 0, Math.max(0, canvasHeight - rect.height)),
+  };
+}
+
+function rectsOverlap(a, b, gap = 0) {
+  return !(
+    a.x + a.width + gap <= b.x ||
+    b.x + b.width + gap <= a.x ||
+    a.y + a.height + gap <= b.y ||
+    b.y + b.height + gap <= a.y
+  );
+}
+
+function pointInRect(point, rect, gap = 0) {
+  return (
+    point.x >= rect.x - gap &&
+    point.x <= rect.x + rect.width + gap &&
+    point.y >= rect.y - gap &&
+    point.y <= rect.y + rect.height + gap
+  );
+}
+
+function getOrientation(a, b, c) {
+  return (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
+}
+
+function isPointOnSegment(point, start, end) {
+  return (
+    point.x >= Math.min(start.x, end.x) - GEOMETRY_EPSILON &&
+    point.x <= Math.max(start.x, end.x) + GEOMETRY_EPSILON &&
+    point.y >= Math.min(start.y, end.y) - GEOMETRY_EPSILON &&
+    point.y <= Math.max(start.y, end.y) + GEOMETRY_EPSILON
+  );
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = getOrientation(a, b, c);
+  const o2 = getOrientation(a, b, d);
+  const o3 = getOrientation(c, d, a);
+  const o4 = getOrientation(c, d, b);
+  if (o1 * o2 < 0 && o3 * o4 < 0) {
+    return true;
   }
-  const bottomY = bounds.bottom + gap;
-  if (bottomY + labelHeight <= canvasHeight) {
-    return { x, y: bottomY };
+  return (
+    (Math.abs(o1) <= GEOMETRY_EPSILON && isPointOnSegment(c, a, b)) ||
+    (Math.abs(o2) <= GEOMETRY_EPSILON && isPointOnSegment(d, a, b)) ||
+    (Math.abs(o3) <= GEOMETRY_EPSILON && isPointOnSegment(a, c, d)) ||
+    (Math.abs(o4) <= GEOMETRY_EPSILON && isPointOnSegment(b, c, d))
+  );
+}
+
+function segmentIntersectsRect(start, end, rect, gap = 0) {
+  const expanded = {
+    x: rect.x - gap,
+    y: rect.y - gap,
+    width: rect.width + gap * 2,
+    height: rect.height + gap * 2,
+  };
+  if (pointInRect(start, expanded) || pointInRect(end, expanded)) {
+    return true;
+  }
+  const topLeft = { x: expanded.x, y: expanded.y };
+  const topRight = { x: expanded.x + expanded.width, y: expanded.y };
+  const bottomRight = {
+    x: expanded.x + expanded.width,
+    y: expanded.y + expanded.height,
+  };
+  const bottomLeft = { x: expanded.x, y: expanded.y + expanded.height };
+  return (
+    segmentsIntersect(start, end, topLeft, topRight) ||
+    segmentsIntersect(start, end, topRight, bottomRight) ||
+    segmentsIntersect(start, end, bottomRight, bottomLeft) ||
+    segmentsIntersect(start, end, bottomLeft, topLeft)
+  );
+}
+
+function countContourCollisions(rect, displayContours) {
+  let collisions = 0;
+  displayContours.forEach(({ closed, displayPoints }) => {
+    displayPoints.forEach((point) => {
+      if (pointInRect(point, rect, LABEL_COLLISION_GAP)) {
+        collisions += 1;
+      }
+    });
+    getContourSegments({ closed, points: displayPoints }).forEach((segment) => {
+      if (
+        segmentIntersectsRect(
+          displayPoints[segment.index],
+          displayPoints[segment.nextIndex],
+          rect,
+          LABEL_COLLISION_GAP,
+        )
+      ) {
+        collisions += 2;
+      }
+    });
+  });
+  return collisions;
+}
+
+function countLabelCollisions(rect, occupiedRects) {
+  return occupiedRects.filter((occupied) => rectsOverlap(rect, occupied, LABEL_COLLISION_GAP))
+    .length;
+}
+
+function buildLabelCandidates(entry, canvasWidth, canvasHeight) {
+  const { bounds, displayPoints, labelHeight, labelWidth } = entry;
+  const candidates = [];
+  displayPoints.forEach((point) => {
+    const anchorPenalty = point.y - bounds.top;
+    for (let stack = 0; stack <= LABEL_STACK_LIMIT; stack += 1) {
+      const stackOffset = stack * (labelHeight + LABEL_COLLISION_GAP);
+      const placements = [
+        {
+          preference: 0,
+          rect: {
+            x: point.x - labelWidth / 2,
+            y: point.y - labelHeight - LABEL_GAP - stackOffset,
+            width: labelWidth,
+            height: labelHeight,
+          },
+        },
+        {
+          preference: 22,
+          rect: {
+            x: point.x - labelWidth / 2,
+            y: point.y + LABEL_GAP + stackOffset,
+            width: labelWidth,
+            height: labelHeight,
+          },
+        },
+        {
+          preference: 34,
+          rect: {
+            x: point.x + LABEL_GAP + stackOffset,
+            y: point.y - labelHeight / 2,
+            width: labelWidth,
+            height: labelHeight,
+          },
+        },
+        {
+          preference: 34,
+          rect: {
+            x: point.x - labelWidth - LABEL_GAP - stackOffset,
+            y: point.y - labelHeight / 2,
+            width: labelWidth,
+            height: labelHeight,
+          },
+        },
+      ];
+      placements.forEach((placement) => {
+        const rect = getClampedRect(placement.rect, canvasWidth, canvasHeight);
+        const center = getRectCenter(rect);
+        candidates.push({
+          anchor: point,
+          rect,
+          baseScore:
+            placement.preference +
+            stack * 18 +
+            anchorPenalty * 0.35 +
+            Math.hypot(center.x - point.x, center.y - point.y) * 0.15,
+        });
+      });
+    }
+  });
+  return candidates;
+}
+
+function getBestLabelPlacement(entry, displayContours, occupiedRects, canvasWidth, canvasHeight) {
+  let bestCandidate = null;
+  buildLabelCandidates(entry, canvasWidth, canvasHeight).forEach((candidate) => {
+    const lineCollisions = countContourCollisions(candidate.rect, displayContours);
+    const labelCollisions = countLabelCollisions(candidate.rect, occupiedRects);
+    const score =
+      candidate.baseScore +
+      lineCollisions * LABEL_LINE_COLLISION_WEIGHT +
+      labelCollisions * LABEL_LABEL_COLLISION_WEIGHT;
+    if (!bestCandidate || score < bestCandidate.score) {
+      bestCandidate = { ...candidate, score };
+    }
+  });
+  if (bestCandidate) {
+    return bestCandidate.rect;
   }
   return {
-    x,
-    y: clamp(topY, 0, Math.max(0, canvasHeight - labelHeight)),
+    x: 0,
+    y: 0,
+    width: entry.labelWidth,
+    height: entry.labelHeight,
   };
+}
+
+export function getContourLabelPlacements(entries, { canvasWidth, canvasHeight }) {
+  const occupiedRects = [];
+  return entries.map((entry) => {
+    const rect = getBestLabelPlacement(
+      entry,
+      entries,
+      occupiedRects,
+      canvasWidth,
+      canvasHeight,
+    );
+    occupiedRects.push(rect);
+    return { ...entry, labelRect: rect };
+  });
 }
 
 function syncCanvasBackingStore(canvas, dpr) {
@@ -88,64 +299,53 @@ function drawSmoothPath(ctx, displayPoints, closed) {
   ctx.lineTo(last.x, last.y);
 }
 
-function drawContour(ctx, contour, isSelected, options) {
-  const { canvasHeight, canvasWidth, labels, maxControlHandles, pointRadius, scale, showPoints } =
-    options;
-  const label = getLabel(labels, contour.label);
-  const displayPoints = contour.points.map((point) => toDisplayPoint(point, scale));
-  if (!displayPoints.length) {
-    return;
-  }
+function drawContourPath(ctx, { closed, displayPoints, isSelected, label }) {
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   if (isSelected) {
-    drawSmoothPath(ctx, displayPoints, Boolean(contour.closed));
+    drawSmoothPath(ctx, displayPoints, closed);
     ctx.strokeStyle = "rgba(255, 255, 255, 0.84)";
     ctx.lineWidth = 8;
     ctx.stroke();
   }
-  drawSmoothPath(ctx, displayPoints, Boolean(contour.closed));
+  drawSmoothPath(ctx, displayPoints, closed);
   ctx.fillStyle = `${label.color}24`;
   ctx.strokeStyle = label.color;
   ctx.lineWidth = isSelected ? 4 : 2;
-  if (contour.closed) {
+  if (closed) {
     ctx.fill();
   }
   ctx.stroke();
+  ctx.restore();
+}
 
-  const bounds = getDisplayBounds(displayPoints);
+function drawContourLabel(ctx, { label, labelRect }) {
+  ctx.save();
   ctx.font = "12px system-ui, sans-serif";
-  const labelWidth = Math.max(48, ctx.measureText(label.name).width + 12);
-  const labelHeight = 18;
-  const labelPlacement = getLabelPlacement({
-    bounds,
-    labelWidth,
-    labelHeight,
-    canvasWidth,
-    canvasHeight,
-  });
   ctx.fillStyle = label.color;
-  ctx.fillRect(labelPlacement.x, labelPlacement.y, labelWidth, labelHeight);
+  ctx.fillRect(labelRect.x, labelRect.y, labelRect.width, labelRect.height);
   ctx.fillStyle = "#fff";
-  ctx.fillText(label.name, labelPlacement.x + 6, labelPlacement.y + 14);
+  ctx.fillText(label.name, labelRect.x + 6, labelRect.y + 14);
+  ctx.restore();
+}
 
-  if (isSelected && showPoints) {
-    const handleStride = Math.max(1, Math.ceil(displayPoints.length / maxControlHandles));
-    displayPoints.forEach((point, pointIndex) => {
-      const isEndpoint = !contour.closed && (pointIndex === 0 || pointIndex === displayPoints.length - 1);
-      if (pointIndex % handleStride !== 0 && !isEndpoint) {
-        return;
-      }
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, isEndpoint ? pointRadius + 1 : pointRadius, 0, Math.PI * 2);
-      ctx.fillStyle = isEndpoint ? "#ffffff" : label.color;
-      ctx.strokeStyle = label.color;
-      ctx.lineWidth = 2;
-      ctx.fill();
-      ctx.stroke();
-    });
-  }
+function drawContourHandles(ctx, { closed, displayPoints, label, maxControlHandles, pointRadius }) {
+  const handleStride = Math.max(1, Math.ceil(displayPoints.length / maxControlHandles));
+  ctx.save();
+  displayPoints.forEach((point, pointIndex) => {
+    const isEndpoint = !closed && (pointIndex === 0 || pointIndex === displayPoints.length - 1);
+    if (pointIndex % handleStride !== 0 && !isEndpoint) {
+      return;
+    }
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, isEndpoint ? pointRadius + 1 : pointRadius, 0, Math.PI * 2);
+    ctx.fillStyle = isEndpoint ? "#ffffff" : label.color;
+    ctx.strokeStyle = label.color;
+    ctx.lineWidth = 2;
+    ctx.fill();
+    ctx.stroke();
+  });
   ctx.restore();
 }
 
@@ -223,15 +423,40 @@ export function drawAnnotationCanvas({
     return;
   }
   ctx.drawImage(image, 0, 0, cssWidth, cssHeight);
-  const options = {
+  ctx.font = "12px system-ui, sans-serif";
+  const displayContours = contours
+    .map((contour) => {
+      const displayPoints = contour.points.map((point) => toDisplayPoint(point, scale));
+      if (!displayPoints.length) {
+        return null;
+      }
+      const label = getLabel(labels, contour.label);
+      return {
+        closed: Boolean(contour.closed),
+        contour,
+        displayPoints,
+        isSelected: contour.id === selectedId,
+        label,
+        labelHeight: LABEL_HEIGHT,
+        labelWidth: Math.max(LABEL_MIN_WIDTH, ctx.measureText(label.name).width + LABEL_TEXT_PADDING_X),
+        bounds: getDisplayBounds(displayPoints),
+      };
+    })
+    .filter(Boolean);
+  displayContours.forEach((entry) => drawContourPath(ctx, entry));
+  const labelPlacements = getContourLabelPlacements(displayContours, {
     canvasHeight: cssHeight,
     canvasWidth: cssWidth,
-    labels,
-    maxControlHandles,
-    pointRadius,
-    scale,
-    showPoints,
-  };
-  contours.forEach((contour) => drawContour(ctx, contour, contour.id === selectedId, options));
+  });
+  labelPlacements.forEach((entry) => drawContourLabel(ctx, entry));
+  labelPlacements.forEach((entry) => {
+    if (entry.isSelected && showPoints) {
+      drawContourHandles(ctx, {
+        ...entry,
+        maxControlHandles,
+        pointRadius,
+      });
+    }
+  });
   drawDraft(ctx, draftPoints, hoverPoint, { activeLabel, labels, pointRadius, scale });
 }

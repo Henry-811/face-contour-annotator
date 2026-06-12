@@ -6,6 +6,40 @@ import {
 } from "../src/geometry.js";
 import { LABELS, MIN_CLOSED_POINTS, MIN_OPEN_POINTS } from "../src/config.js";
 import { normalizeImportedContours } from "../src/exporter.js";
+import { getContourLabelPlacements } from "../src/renderer.js";
+
+function getBounds(points) {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  return {
+    left: Math.min(...xs),
+    top: Math.min(...ys),
+    right: Math.max(...xs),
+    bottom: Math.max(...ys),
+  };
+}
+
+function makeLabelEntry({ id, points, labelWidth = 70, labelHeight = 18 }) {
+  return {
+    closed: true,
+    contour: { id },
+    displayPoints: points,
+    isSelected: false,
+    label: { id, name: id, color: "#087e6b" },
+    labelHeight,
+    labelWidth,
+    bounds: getBounds(points),
+  };
+}
+
+function rectsOverlap(a, b) {
+  return !(
+    a.x + a.width <= b.x ||
+    b.x + b.width <= a.x ||
+    a.y + a.height <= b.y ||
+    b.y + b.height <= a.y
+  );
+}
 
 function testSoftMoveClampsLargeDrag() {
   const contour = {
@@ -123,9 +157,59 @@ function testImportRejectsInvalidPoints() {
   );
 }
 
+function testLabelPlacementUsesRealContourPoint() {
+  const face = makeLabelEntry({
+    id: "face_outline",
+    labelWidth: 72,
+    points: [
+      { x: 120, y: 50 },
+      { x: 180, y: 90 },
+      { x: 80, y: 230 },
+      { x: 10, y: 150 },
+    ],
+  });
+
+  const [placement] = getContourLabelPlacements([face], {
+    canvasWidth: 260,
+    canvasHeight: 260,
+  });
+
+  assert.ok(placement.labelRect.x > 70);
+  assert.ok(placement.labelRect.x < 120);
+}
+
+function testLabelPlacementAvoidsExistingLabels() {
+  const eye = makeLabelEntry({
+    id: "left_eye",
+    points: [
+      { x: 100, y: 100 },
+      { x: 130, y: 103 },
+      { x: 115, y: 116 },
+    ],
+  });
+  const eyebrow = makeLabelEntry({
+    id: "left_eyebrow",
+    labelWidth: 92,
+    points: [
+      { x: 98, y: 92 },
+      { x: 132, y: 93 },
+      { x: 115, y: 99 },
+    ],
+  });
+
+  const placements = getContourLabelPlacements([eye, eyebrow], {
+    canvasWidth: 260,
+    canvasHeight: 260,
+  });
+
+  assert.equal(rectsOverlap(placements[0].labelRect, placements[1].labelRect), false);
+}
+
 testSoftMoveClampsLargeDrag();
 testHitTestingKeepsLineAndFillDistinct();
 testFilledHitPrefersSmallestContainingContour();
 testImportRejectsInvalidPoints();
+testLabelPlacementUsesRealContourPoint();
+testLabelPlacementAvoidsExistingLabels();
 
 console.log("logic tests passed");
