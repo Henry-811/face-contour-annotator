@@ -76,8 +76,7 @@ const elements = {
   deleteButton: document.getElementById("deleteButton"),
   clearButton: document.getElementById("clearButton"),
   fitButton: document.getElementById("fitButton"),
-  finishOpenButton: document.getElementById("finishOpenButton"),
-  closeShapeButton: document.getElementById("closeShapeButton"),
+  finishDraftButton: document.getElementById("finishDraftButton"),
   cancelDraftButton: document.getElementById("cancelDraftButton"),
 };
 
@@ -93,7 +92,34 @@ function getLabel(labelId) {
 }
 
 function getDefaultClosed(labelId = state.activeLabel) {
-  return getLabel(labelId).defaultClosed;
+  const label = getLabel(labelId);
+  if (label.defaultShapeType) {
+    return label.defaultShapeType === "polygon";
+  }
+  return label.defaultClosed;
+}
+
+function getShapeType(closed) {
+  return closed ? "polygon" : "linestrip";
+}
+
+function getAllowedShapeTypes(labelId = state.activeLabel) {
+  const label = getLabel(labelId);
+  if (Array.isArray(label.allowedShapeTypes)) {
+    return label.allowedShapeTypes;
+  }
+  return [getShapeType(getDefaultClosed(labelId))];
+}
+
+function isShapeAllowed(labelId, closed) {
+  return getAllowedShapeTypes(labelId).includes(getShapeType(closed));
+}
+
+function normalizeClosedForLabel(labelId, preferredClosed = state.drawClosed) {
+  if (isShapeAllowed(labelId, preferredClosed)) {
+    return preferredClosed;
+  }
+  return getDefaultClosed(labelId);
 }
 
 function getDrawShapeName(closed = state.drawClosed) {
@@ -309,14 +335,17 @@ function syncModeControls() {
 
 function syncShapeControls() {
   elements.shapeModeButtons.forEach((button) => {
-    button.classList.toggle(
-      "is-active",
-      (button.dataset.shape === "closed") === state.drawClosed,
-    );
+    const closed = button.dataset.shape === "closed";
+    button.classList.toggle("is-active", closed === state.drawClosed);
+    button.disabled = !isShapeAllowed(state.activeLabel, closed);
   });
 }
 
 function setDrawClosed(closed) {
+  if (!isShapeAllowed(state.activeLabel, closed)) {
+    setStatus(`${getLabel(state.activeLabel).name} does not allow ${getShapeType(closed)}.`, true);
+    return;
+  }
   state.drawClosed = Boolean(closed);
   syncShapeControls();
   updateCommandState();
@@ -374,6 +403,10 @@ function clearContours() {
 }
 
 function finishDraft(closed = getDefaultClosed()) {
+  if (!isShapeAllowed(state.activeLabel, closed)) {
+    setStatus(`${getLabel(state.activeLabel).name} does not allow ${getShapeType(closed)}.`, true);
+    return;
+  }
   const minimumPoints = getMinimumPoints(closed);
   if (state.draftPoints.length < minimumPoints) {
     setStatus(`${getShapeName(closed)} needs at least ${minimumPoints} points.`, true);
@@ -442,10 +475,10 @@ function updateCommandState() {
   elements.deleteButton.disabled = !state.selectedId;
   elements.clearButton.disabled = state.contours.length === 0;
   elements.downloadButton.disabled = !state.image;
-  elements.finishOpenButton.disabled = state.draftPoints.length < MIN_OPEN_POINTS;
-  elements.closeShapeButton.disabled = state.draftPoints.length < MIN_CLOSED_POINTS;
-  elements.finishOpenButton.textContent = "Finish Line";
-  elements.closeShapeButton.textContent = "Finish Region";
+  elements.finishDraftButton.disabled =
+    state.draftPoints.length < getMinimumPoints(state.drawClosed) ||
+    !isShapeAllowed(state.activeLabel, state.drawClosed);
+  elements.finishDraftButton.textContent = state.drawClosed ? "Finish Region" : "Finish Line";
   elements.cancelDraftButton.disabled = state.draftPoints.length === 0;
   elements.densifyButton.disabled = !state.selectedId;
   elements.shapeHint.textContent = `${getLabel(state.activeLabel).name}: ${getDrawShapeName()} mode. ${
@@ -468,9 +501,14 @@ function renderLabels() {
     button.dataset.label = label.id;
     button.innerHTML = `<span class="swatch" style="background:${label.color}"></span><span>${label.name}</span>`;
     button.addEventListener("click", () => {
+      const nextClosed = normalizeClosedForLabel(label.id);
+      if (state.draftPoints.length && nextClosed !== state.drawClosed) {
+        setStatus(`Finish or cancel the current ${getDrawShapeName()} before switching to ${label.name}.`, true);
+        return;
+      }
       state.activeLabel = label.id;
       if (!state.draftPoints.length) {
-        state.drawClosed = getDefaultClosed(label.id);
+        state.drawClosed = nextClosed;
       }
       renderLabels();
       updateCommandState();
@@ -523,10 +561,19 @@ function renderContourList() {
       select.appendChild(option);
     });
     select.addEventListener("change", (event) => {
+      const nextLabelId = event.target.value;
+      if (!isShapeAllowed(nextLabelId, contour.closed)) {
+        event.target.value = contour.label;
+        setStatus(
+          `${getLabel(nextLabelId).name} does not allow ${getShapeType(contour.closed)}.`,
+          true,
+        );
+        return;
+      }
       const previous = snapshotContours();
       contour.label = event.target.value;
       state.activeLabel = contour.label;
-      state.drawClosed = Boolean(contour.closed);
+      state.drawClosed = normalizeClosedForLabel(contour.label, Boolean(contour.closed));
       commitChange(previous);
       renderAll();
     });
@@ -646,7 +693,7 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
       : state.activeLabel;
     state.drawClosed =
       typeof options.drawClosed === "boolean"
-        ? options.drawClosed
+        ? normalizeClosedForLabel(state.activeLabel, options.drawClosed)
         : getDefaultClosed(state.activeLabel);
     state.mode = options.mode === "refine" || options.mode === "edit" ? "refine" : "draw";
     state.softDrag = typeof options.softDrag === "boolean" ? options.softDrag : true;
@@ -1012,8 +1059,7 @@ function wireEvents() {
   elements.redoButton.addEventListener("click", redo);
   elements.deleteButton.addEventListener("click", deleteSelected);
   elements.clearButton.addEventListener("click", clearContours);
-  elements.finishOpenButton.addEventListener("click", () => finishDraft(false));
-  elements.closeShapeButton.addEventListener("click", () => finishDraft(true));
+  elements.finishDraftButton.addEventListener("click", finishDraftWithDefault);
   elements.cancelDraftButton.addEventListener("click", cancelDraft);
   elements.densifyButton.addEventListener("click", densifySelectedContour);
   elements.fitButton.addEventListener("click", () => {

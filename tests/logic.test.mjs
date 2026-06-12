@@ -5,7 +5,7 @@ import {
   hitTestContours,
 } from "../src/geometry.js";
 import { LABELS, MIN_CLOSED_POINTS, MIN_OPEN_POINTS } from "../src/config.js";
-import { normalizeImportedContours } from "../src/exporter.js";
+import { buildAnnotationExport, normalizeImportedContours } from "../src/exporter.js";
 import { getContourLabelPlacements } from "../src/renderer.js";
 
 function getBounds(points) {
@@ -157,6 +157,82 @@ function testImportRejectsInvalidPoints() {
   );
 }
 
+function testExportIncludesTaskSchema() {
+  const exportData = buildAnnotationExport({
+    image: { naturalWidth: 512, naturalHeight: 512 },
+    fileName: "face.jpg",
+    labels: LABELS,
+    contours: [
+      {
+        id: "nose_line",
+        label: "nose",
+        closed: false,
+        points: [
+          { x: 10, y: 20 },
+          { x: 12, y: 28 },
+        ],
+      },
+    ],
+  });
+
+  const noseSchema = exportData.taskSchema.labels.find((label) => label.id === "nose");
+  const eyeSchema = exportData.taskSchema.labels.find((label) => label.id === "left_eye");
+
+  assert.equal(exportData.taskSchema.coordinateSystem, "image_pixels");
+  assert.equal(noseSchema.defaultShapeType, "linestrip");
+  assert.deepEqual(noseSchema.allowedShapeTypes, ["linestrip"]);
+  assert.deepEqual(eyeSchema.allowedShapeTypes, ["polygon"]);
+  assert.equal(exportData.contours[0].shape_type, "linestrip");
+}
+
+function testImportRejectsDisallowedLabelShape() {
+  assert.throws(
+    () =>
+      normalizeImportedContours({
+        contours: [
+          {
+            label: "left_eye",
+            closed: false,
+            points: [
+              { x: 1, y: 1 },
+              { x: 2, y: 2 },
+            ],
+          },
+        ],
+        labels: LABELS,
+        imageSize: { width: 512, height: 512 },
+        createId: () => "contour_test",
+        minOpenPoints: MIN_OPEN_POINTS,
+        minClosedPoints: MIN_CLOSED_POINTS,
+      }),
+    /does not allow linestrip/,
+  );
+}
+
+function testImportRejectsUnknownLabel() {
+  assert.throws(
+    () =>
+      normalizeImportedContours({
+        contours: [
+          {
+            label: "unknown_label",
+            closed: false,
+            points: [
+              { x: 1, y: 1 },
+              { x: 2, y: 2 },
+            ],
+          },
+        ],
+        labels: LABELS,
+        imageSize: { width: 512, height: 512 },
+        createId: () => "contour_test",
+        minOpenPoints: MIN_OPEN_POINTS,
+        minClosedPoints: MIN_CLOSED_POINTS,
+      }),
+    /Unknown contour label/,
+  );
+}
+
 function testLabelPlacementUsesRealContourPoint() {
   const face = makeLabelEntry({
     id: "face_outline",
@@ -209,6 +285,9 @@ testSoftMoveClampsLargeDrag();
 testHitTestingKeepsLineAndFillDistinct();
 testFilledHitPrefersSmallestContainingContour();
 testImportRejectsInvalidPoints();
+testExportIncludesTaskSchema();
+testImportRejectsDisallowedLabelShape();
+testImportRejectsUnknownLabel();
 testLabelPlacementUsesRealContourPoint();
 testLabelPlacementAvoidsExistingLabels();
 
