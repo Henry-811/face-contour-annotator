@@ -1,0 +1,694 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Face Contour Lab</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #e9ece8;
+        --panel: #fbfaf4;
+        --ink: #1d2622;
+        --muted: #66706b;
+        --line: #cdd3ce;
+        --line-strong: #9ea8a2;
+        --accent: #087e6b;
+        --accent-ink: #ffffff;
+        --hot: #d84b2a;
+        --canvas: #d8ddd7;
+        --shadow: 0 18px 42px rgba(22, 31, 27, 0.16);
+        --radius: 6px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background:
+          linear-gradient(rgba(31, 38, 34, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(31, 38, 34, 0.035) 1px, transparent 1px),
+          var(--bg);
+        background-size: 28px 28px;
+        color: var(--ink);
+        font-family: "Aptos", "Bahnschrift", "Segoe UI", sans-serif;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        min-height: 36px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fffef8;
+        color: var(--ink);
+        cursor: pointer;
+        transition:
+          background 140ms ease,
+          border-color 140ms ease,
+          color 140ms ease,
+          transform 140ms ease;
+      }
+
+      button:hover {
+        border-color: var(--line-strong);
+        transform: translateY(-1px);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
+        transform: none;
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: 292px minmax(360px, 1fr) 352px;
+        height: 100vh;
+        min-height: 580px;
+      }
+
+      .sidebar,
+      .inspector {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        border-color: var(--line);
+        background: rgba(251, 250, 244, 0.96);
+        backdrop-filter: blur(10px);
+      }
+
+      .sidebar {
+        border-right: 1px solid var(--line);
+        overflow-y: auto;
+      }
+
+      .inspector {
+        border-left: 1px solid var(--line);
+      }
+
+      .brand {
+        padding: 22px 20px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-family: Georgia, "Aptos Display", serif;
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      .brand .subline {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+
+      .section {
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+        color: #36413c;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .primary-button {
+        width: 100%;
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--accent-ink);
+        font-weight: 700;
+      }
+
+      .primary-button:hover {
+        border-color: #066957;
+        background: #066957;
+      }
+
+      .button-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .button-row.three {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+
+      .button-row.compact {
+        grid-template-columns: 1fr;
+      }
+
+      .mode-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .mode-button.is-active,
+      .label-button.is-active {
+        border-color: var(--ink);
+        background: var(--ink);
+        color: #fff;
+      }
+
+      .label-grid {
+        display: grid;
+        gap: 7px;
+      }
+
+      .label-button {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr);
+        align-items: center;
+        gap: 9px;
+        width: 100%;
+        min-height: 34px;
+        padding: 0 10px;
+        text-align: left;
+      }
+
+      .swatch {
+        width: 12px;
+        height: 12px;
+        border: 1px solid rgba(0, 0, 0, 0.18);
+        border-radius: 50%;
+      }
+
+      .switch {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 46px;
+        align-items: center;
+        gap: 12px;
+        min-height: 40px;
+        padding: 0 4px 0 0;
+      }
+
+      .switch-label {
+        min-width: 0;
+        font-weight: 700;
+      }
+
+      .switch input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .switch-track {
+        position: relative;
+        width: 46px;
+        height: 26px;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        background: #d8ddd7;
+      }
+
+      .switch-track::after {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
+        content: "";
+        transition:
+          transform 150ms ease,
+          background 150ms ease;
+      }
+
+      .switch input:checked + .switch-track {
+        border-color: var(--accent);
+        background: var(--accent);
+      }
+
+      .switch input:checked + .switch-track::after {
+        transform: translateX(20px);
+      }
+
+      .range-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .range-row strong {
+        color: var(--ink);
+        font-size: 13px;
+      }
+
+      .range-input {
+        width: 100%;
+        margin-top: 8px;
+        accent-color: var(--accent);
+      }
+
+      .shape-hint {
+        margin-top: 9px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-rows: 56px minmax(0, 1fr) 38px;
+        min-width: 0;
+        min-height: 0;
+      }
+
+      .topbar,
+      .statusbar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(251, 250, 244, 0.76);
+      }
+
+      .statusbar {
+        border-top: 1px solid var(--line);
+        border-bottom: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .file-meta {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 700;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 0 9px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fffef8;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .stage-shell {
+        position: relative;
+        display: grid;
+        min-width: 0;
+        min-height: 0;
+        place-items: center;
+        padding: 18px;
+        overflow: hidden;
+        background:
+          linear-gradient(45deg, rgba(255, 255, 255, 0.45) 25%, transparent 25%),
+          linear-gradient(-45deg, rgba(255, 255, 255, 0.45) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.45) 75%),
+          linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.45) 75%),
+          var(--canvas);
+        background-position:
+          0 0,
+          0 12px,
+          12px -12px,
+          -12px 0;
+        background-size: 24px 24px;
+      }
+
+      .stage-shell.is-drag-over {
+        outline: 3px solid rgba(8, 126, 107, 0.34);
+        outline-offset: -12px;
+      }
+
+      .canvas-wrap {
+        position: relative;
+        display: grid;
+        place-items: center;
+        max-width: 100%;
+        max-height: 100%;
+        box-shadow: var(--shadow);
+      }
+
+      canvas {
+        display: block;
+        max-width: 100%;
+        max-height: 100%;
+        background: #fefefe;
+        image-rendering: auto;
+        touch-action: none;
+      }
+
+      .empty-state {
+        position: absolute;
+        inset: 18px;
+        display: grid;
+        place-items: center;
+        pointer-events: none;
+      }
+
+      .empty-card {
+        width: min(380px, 100%);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(251, 250, 244, 0.92);
+        box-shadow: 0 16px 36px rgba(31, 38, 34, 0.12);
+        padding: 22px;
+        text-align: center;
+      }
+
+      .empty-card strong {
+        display: block;
+        margin-bottom: 12px;
+        font-family: Georgia, serif;
+        font-size: 23px;
+        letter-spacing: 0;
+      }
+
+      .empty-card button {
+        pointer-events: auto;
+        min-width: 160px;
+      }
+
+      .inspector-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .inspector-header h2 {
+        margin: 0;
+        font-family: Georgia, serif;
+        font-size: 22px;
+        letter-spacing: 0;
+      }
+
+      .contour-list {
+        min-height: 0;
+        flex: 1;
+        overflow: auto;
+        padding: 12px;
+      }
+
+      .contour-item {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 10px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fffef8;
+      }
+
+      .contour-item.is-selected {
+        border-color: var(--accent);
+        box-shadow: inset 4px 0 0 var(--accent);
+      }
+
+      .contour-item-top {
+        display: grid;
+        grid-template-columns: 14px 28px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .contour-index {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .contour-item select {
+        width: 100%;
+        min-width: 0;
+        min-height: 32px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #ffffff;
+        color: var(--ink);
+      }
+
+      .contour-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .small-button {
+        min-width: 34px;
+        min-height: 32px;
+        padding: 0 9px;
+        font-weight: 700;
+      }
+
+      .danger {
+        border-color: rgba(216, 75, 42, 0.44);
+        color: var(--hot);
+      }
+
+      .danger:hover {
+        border-color: var(--hot);
+      }
+
+      .export-panel {
+        padding: 14px 18px 18px;
+        border-top: 1px solid var(--line);
+      }
+
+      .json-output {
+        width: 100%;
+        height: 128px;
+        margin-top: 10px;
+        resize: none;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #242b27;
+        color: #eaf0e9;
+        font-family: "Cascadia Mono", Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.42;
+        padding: 10px;
+      }
+
+      .empty-list {
+        display: grid;
+        min-height: 100%;
+        place-items: center;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: center;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      @media (max-width: 1080px) {
+        body {
+          overflow: auto;
+        }
+
+        .app {
+          grid-template-columns: 260px minmax(320px, 1fr);
+          grid-template-rows: minmax(540px, 70vh) minmax(360px, 1fr);
+          height: auto;
+          min-height: 100vh;
+        }
+
+        .inspector {
+          grid-column: 1 / -1;
+          border-top: 1px solid var(--line);
+          border-left: 0;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .app {
+          display: block;
+        }
+
+        .workspace {
+          height: 68vh;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <h1>Face Contour Lab</h1>
+          <div class="subline">local facial-outline annotation</div>
+        </header>
+
+        <section class="section">
+          <button class="primary-button" id="openImageButton" type="button">
+            Open image
+          </button>
+          <input id="imageInput" type="file" accept="image/*" hidden />
+        </section>
+
+        <section class="section">
+          <div class="section-title">Label</div>
+          <div class="label-grid" id="labelGrid"></div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">Mode</div>
+          <div class="mode-grid">
+            <button class="mode-button is-active" data-mode="draw" type="button">
+              Draw
+            </button>
+            <button class="mode-button" data-mode="refine" type="button">Refine</button>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">Current contour</div>
+          <div class="button-row compact">
+            <button id="finishOpenButton" type="button">Finish Open</button>
+          </div>
+          <div class="button-row" style="margin-top: 8px">
+            <button id="closeShapeButton" type="button">Close Shape</button>
+            <button id="cancelDraftButton" class="danger" type="button">Cancel</button>
+          </div>
+          <div class="shape-hint" id="shapeHint">face outline defaults to closed shapes.</div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">Refine</div>
+          <label class="switch">
+            <span class="switch-label">Smooth edit</span>
+            <input id="softDragToggle" type="checkbox" checked />
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="switch" style="margin-top: 8px">
+            <span class="switch-label">Show points</span>
+            <input id="showPointsToggle" type="checkbox" />
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <div class="range-row">
+            <strong>Influence</strong>
+            <span id="softRadiusValue">40 px</span>
+          </div>
+          <input
+            id="softRadiusInput"
+            class="range-input"
+            type="range"
+            min="16"
+            max="96"
+            step="8"
+            value="40"
+          />
+          <div class="button-row compact" style="margin-top: 10px">
+            <button id="densifyButton" type="button">Add curve points</button>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">Actions</div>
+          <div class="button-row three">
+            <button id="undoButton" type="button">Undo</button>
+            <button id="redoButton" type="button">Redo</button>
+            <button id="deleteButton" class="danger" type="button">Delete</button>
+          </div>
+          <div class="button-row" style="margin-top: 8px">
+            <button id="clearButton" class="danger" type="button">Clear</button>
+            <button id="fitButton" type="button">Fit</button>
+          </div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div class="file-meta" id="fileMeta">No image loaded</div>
+          <span class="pill" id="imageSize">0 x 0</span>
+          <span class="pill" id="cursorMeta">x 0, y 0</span>
+          <span class="pill" id="draftMeta">0 draft points</span>
+        </header>
+
+        <section class="stage-shell" id="stageShell">
+          <div class="canvas-wrap">
+            <canvas id="annotationCanvas" width="1" height="1"></canvas>
+          </div>
+          <div class="empty-state" id="emptyState">
+            <div class="empty-card">
+              <strong>Drop a face image</strong>
+              <button id="emptyOpenButton" class="primary-button" type="button">
+                Open image
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <footer class="statusbar">
+          <span id="statusText">Ready.</span>
+        </footer>
+      </section>
+
+      <aside class="inspector">
+        <header class="inspector-header">
+          <h2>Contours</h2>
+          <span class="pill" id="contourCount">0 contours</span>
+        </header>
+
+        <section class="contour-list" id="contourList"></section>
+
+        <section class="export-panel">
+          <div class="button-row">
+            <button id="downloadButton" type="button">Download JSON</button>
+            <button id="importButton" type="button">Import JSON</button>
+          </div>
+          <input id="jsonInput" type="file" accept="application/json,.json" hidden />
+          <textarea class="json-output" id="jsonOutput" readonly spellcheck="false"></textarea>
+        </section>
+      </aside>
+    </main>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
+
