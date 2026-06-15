@@ -5,8 +5,28 @@ import {
   hitTestContours,
 } from "../src/geometry.js";
 import { LABELS, MIN_CLOSED_POINTS, MIN_OPEN_POINTS } from "../src/config.js";
-import { buildAnnotationExport, normalizeImportedContours } from "../src/exporter.js";
-import { getContourLabelPlacements } from "../src/renderer.js";
+import {
+  buildAnnotationExport,
+  buildProjectExport,
+  normalizeImportedContours,
+  validateContoursForTaskSchema,
+} from "../src/exporter.js";
+import {
+  createAnnotationProject,
+  createProjectImage,
+  getFilePath,
+  getAdjacentImageId,
+  getProgress,
+  hydrateProjectImages,
+  toProjectImageRecord,
+  toProjectMetadata,
+} from "../src/project.js";
+import {
+  applyCanvasScale,
+  getContourLabelPlacements,
+  getFitCanvasScale,
+} from "../src/renderer.js";
+import { buildDefaultFeatureContours } from "../src/templates.js";
 
 function getBounds(points) {
   const xs = points.map((point) => point.x);
@@ -185,6 +205,294 @@ function testExportIncludesTaskSchema() {
   assert.equal(exportData.contours[0].shape_type, "linestrip");
 }
 
+function testProjectExportIncludesAllImagesAndProgress() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "face001.jpg",
+        path: "batch_a/face001.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+        status: "done",
+        contours: [
+          {
+            id: "left_eye",
+            label: "left_eye",
+            closed: true,
+            points: [
+              { x: 10, y: 10 },
+              { x: 20, y: 10 },
+              { x: 15, y: 18 },
+            ],
+          },
+        ],
+      }),
+      createProjectImage({
+        id: "img_002",
+        name: "face002.jpg",
+        path: "batch_a/face002.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,def",
+        status: "skipped",
+        contours: [],
+      }),
+    ],
+    taskSchema: {},
+  });
+
+  const exportData = buildProjectExport({ project, labels: LABELS });
+
+  assert.equal(exportData.version, "face-contour-project-v1");
+  assert.equal(exportData.images.length, 2);
+  assert.equal(exportData.images[0].path, "batch_a/face001.jpg");
+  assert.equal("dataUrl" in exportData.images[0], false);
+  assert.equal(exportData.progress.total, 2);
+  assert.equal(exportData.progress.done, 1);
+  assert.equal(exportData.progress.skipped, 1);
+  assert.equal(exportData.images[0].contours[0].shape_type, "polygon");
+}
+
+function testProjectProgressCountsStatuses() {
+  const progress = getProgress([
+    { status: "done" },
+    { status: "skipped" },
+    { status: "needs_review" },
+    { status: "in_progress" },
+    { status: "unlabeled" },
+  ]);
+
+  assert.equal(progress.total, 5);
+  assert.equal(progress.done, 1);
+  assert.equal(progress.skipped, 1);
+  assert.equal(progress.needs_review, 1);
+  assert.equal(progress.in_progress, 1);
+  assert.equal(progress.unlabeled, 1);
+}
+
+function testProjectMetadataOmitsImagePayload() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "face001.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+        contours: [
+          {
+            id: "left_eye",
+            label: "left_eye",
+            closed: true,
+            points: [
+              { x: 10, y: 10 },
+              { x: 20, y: 10 },
+              { x: 15, y: 18 },
+            ],
+          },
+        ],
+      }),
+    ],
+    taskSchema: {},
+  });
+
+  const metadata = toProjectMetadata(project);
+
+  assert.equal("dataUrl" in metadata.images[0], false);
+  assert.equal("contours" in metadata.images[0], false);
+  assert.equal(metadata.images[0].status, "unlabeled");
+}
+
+function testProjectImageRecordOmitsDataUrl() {
+  const image = createProjectImage({
+    id: "img_001",
+    name: "face001.jpg",
+    width: 512,
+    height: 512,
+    dataUrl: "data:image/jpeg;base64,abc",
+    contours: [
+      {
+        id: "nose",
+        label: "nose",
+        closed: false,
+        points: [
+          { x: 10, y: 10 },
+          { x: 20, y: 30 },
+        ],
+      },
+    ],
+  });
+
+  const record = toProjectImageRecord(image);
+
+  assert.equal("dataUrl" in record, false);
+  assert.equal(record.contours.length, 1);
+  assert.equal(record.contours[0].label, "nose");
+}
+
+function testHydrateProjectImagesMergesImageRecords() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "face001.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+      }),
+    ],
+    taskSchema: {},
+  });
+  const metadata = toProjectMetadata(project);
+  const record = {
+    ...metadata.images[0],
+    status: "done",
+    contours: [
+      {
+        id: "mouth",
+        label: "mouth",
+        closed: true,
+        points: [
+          { x: 10, y: 10 },
+          { x: 20, y: 10 },
+          { x: 15, y: 18 },
+        ],
+      },
+    ],
+  };
+
+  const hydrated = hydrateProjectImages(metadata, [record]);
+
+  assert.equal(hydrated.images[0].status, "done");
+  assert.equal(hydrated.images[0].contours[0].label, "mouth");
+  assert.equal(hydrated.images[0].dataUrl, undefined);
+}
+
+function testProjectAdjacentImageNavigation() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "a.jpg",
+        width: 10,
+        height: 10,
+        dataUrl: "data:image/jpeg;base64,a",
+      }),
+      createProjectImage({
+        id: "img_002",
+        name: "b.jpg",
+        width: 10,
+        height: 10,
+        dataUrl: "data:image/jpeg;base64,b",
+      }),
+    ],
+    taskSchema: {},
+  });
+
+  assert.equal(getAdjacentImageId(project, -1), null);
+  assert.equal(getAdjacentImageId(project, 1), "img_002");
+  project.currentImageId = "img_002";
+  assert.equal(getAdjacentImageId(project, -1), "img_001");
+  assert.equal(getAdjacentImageId(project, 1), null);
+}
+
+function testFolderImportPreservesRelativePath() {
+  assert.equal(
+    getFilePath({
+      name: "face001.jpg",
+      webkitRelativePath: "batch_a/face001.jpg",
+    }),
+    "batch_a/face001.jpg",
+  );
+  assert.equal(getFilePath({ name: "face002.jpg" }), "face002.jpg");
+}
+
+function testDoneValidationRejectsInvalidContours() {
+  const errors = validateContoursForTaskSchema({
+    contours: [
+      {
+        id: "bad_eye",
+        label: "left_eye",
+        closed: false,
+        points: [
+          { x: 1, y: 1 },
+          { x: 2, y: 2 },
+        ],
+      },
+    ],
+    labels: LABELS,
+    imageSize: { width: 512, height: 512 },
+    minOpenPoints: MIN_OPEN_POINTS,
+    minClosedPoints: MIN_CLOSED_POINTS,
+  });
+
+  assert.match(errors[0], /does not allow linestrip/);
+}
+
+function testFeatureTemplateMatchesTaskSchema() {
+  let nextId = 0;
+  const contours = buildDefaultFeatureContours({
+    imageSize: { width: 512, height: 512 },
+    existingContours: [],
+    labels: LABELS,
+    createId: () => `template_${++nextId}`,
+  });
+
+  const normalized = normalizeImportedContours({
+    contours,
+    labels: LABELS,
+    imageSize: { width: 512, height: 512 },
+    createId: () => "unused",
+    minOpenPoints: MIN_OPEN_POINTS,
+    minClosedPoints: MIN_CLOSED_POINTS,
+  });
+  const contourByLabel = new Map(normalized.map((contour) => [contour.label, contour]));
+
+  assert.equal(contours.length, 8);
+  assert.equal(contourByLabel.get("nose").closed, false);
+  assert.equal(contourByLabel.get("left_eyebrow").closed, false);
+  assert.equal(contourByLabel.get("left_eye").closed, true);
+  assert.equal(contourByLabel.get("mouth").points.length >= MIN_CLOSED_POINTS, true);
+}
+
+function testFeatureTemplateSkipsExistingLabels() {
+  const contours = buildDefaultFeatureContours({
+    imageSize: { width: 512, height: 512 },
+    existingContours: [
+      {
+        id: "manual_left_eye",
+        label: "left_eye",
+        closed: true,
+        points: [
+          { x: 1, y: 1 },
+          { x: 2, y: 1 },
+          { x: 2, y: 2 },
+        ],
+      },
+    ],
+    labels: LABELS,
+    createId: () => "template",
+  });
+
+  assert.equal(contours.some((contour) => contour.label === "left_eye"), false);
+  assert.equal(contours.length, 7);
+}
+
+function testFeatureTemplateRejectsTinyImages() {
+  assert.throws(
+    () =>
+      buildDefaultFeatureContours({
+        imageSize: { width: 1, height: 1 },
+        existingContours: [],
+        labels: LABELS,
+        createId: () => "template",
+      }),
+    /at least/,
+  );
+}
+
 function testImportRejectsDisallowedLabelShape() {
   assert.throws(
     () =>
@@ -281,14 +589,49 @@ function testLabelPlacementAvoidsExistingLabels() {
   assert.equal(rectsOverlap(placements[0].labelRect, placements[1].labelRect), false);
 }
 
+function testFitCanvasScaleUsesStageBounds() {
+  const scale = getFitCanvasScale({
+    stageShell: { clientWidth: 900, clientHeight: 700 },
+    image: { naturalWidth: 512, naturalHeight: 512 },
+  });
+
+  assert.equal(scale, (700 - 36) / 512);
+}
+
+function testApplyCanvasScaleAllowsZoomBeyondWorkspace() {
+  const canvas = { style: {} };
+  const scale = applyCanvasScale({
+    canvas,
+    image: { naturalWidth: 512, naturalHeight: 512 },
+    scale: 2,
+  });
+
+  assert.equal(scale, 2);
+  assert.equal(canvas.style.width, "1024px");
+  assert.equal(canvas.style.height, "1024px");
+}
+
 testSoftMoveClampsLargeDrag();
 testHitTestingKeepsLineAndFillDistinct();
 testFilledHitPrefersSmallestContainingContour();
 testImportRejectsInvalidPoints();
 testExportIncludesTaskSchema();
+testProjectExportIncludesAllImagesAndProgress();
+testProjectProgressCountsStatuses();
+testProjectMetadataOmitsImagePayload();
+testProjectImageRecordOmitsDataUrl();
+testHydrateProjectImagesMergesImageRecords();
+testProjectAdjacentImageNavigation();
+testFolderImportPreservesRelativePath();
+testDoneValidationRejectsInvalidContours();
+testFeatureTemplateMatchesTaskSchema();
+testFeatureTemplateSkipsExistingLabels();
+testFeatureTemplateRejectsTinyImages();
 testImportRejectsDisallowedLabelShape();
 testImportRejectsUnknownLabel();
 testLabelPlacementUsesRealContourPoint();
 testLabelPlacementAvoidsExistingLabels();
+testFitCanvasScaleUsesStageBounds();
+testApplyCanvasScaleAllowsZoomBeyondWorkspace();
 
 console.log("logic tests passed");

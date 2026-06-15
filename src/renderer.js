@@ -9,6 +9,9 @@ const LABEL_STACK_LIMIT = 3;
 const LABEL_LINE_COLLISION_WEIGHT = 10000;
 const LABEL_LABEL_COLLISION_WEIGHT = 100000;
 const GEOMETRY_EPSILON = 0.000001;
+const CANVAS_PADDING = 36;
+const MAX_FIT_SCALE = 1.75;
+const MIN_CANVAS_SCALE = 0.08;
 
 function getLabel(labels, labelId) {
   return labels.find((label) => label.id === labelId) || labels[0];
@@ -387,17 +390,36 @@ function drawDraft(ctx, draftPoints, hoverPoint, options) {
   ctx.restore();
 }
 
-export function fitCanvasToImage({ canvas, stageShell, image }) {
+export function getFitCanvasScale({ stageShell, image }) {
   if (!image) {
     return null;
   }
-  const maxWidth = Math.max(240, stageShell.clientWidth - 36);
-  const maxHeight = Math.max(240, stageShell.clientHeight - 36);
-  const scale = Math.min(maxWidth / image.naturalWidth, maxHeight / image.naturalHeight, 1.75);
-  const nextScale = Math.max(0.08, scale);
+  const maxWidth = Math.max(240, stageShell.clientWidth - CANVAS_PADDING);
+  const maxHeight = Math.max(240, stageShell.clientHeight - CANVAS_PADDING);
+  const scale = Math.min(
+    maxWidth / image.naturalWidth,
+    maxHeight / image.naturalHeight,
+    MAX_FIT_SCALE,
+  );
+  return Math.max(MIN_CANVAS_SCALE, scale);
+}
+
+export function applyCanvasScale({ canvas, image, scale }) {
+  if (!image) {
+    return null;
+  }
+  const nextScale = Math.max(MIN_CANVAS_SCALE, scale);
   canvas.style.width = `${Math.round(image.naturalWidth * nextScale)}px`;
   canvas.style.height = `${Math.round(image.naturalHeight * nextScale)}px`;
   return nextScale;
+}
+
+export function fitCanvasToImage({ canvas, stageShell, image }) {
+  const scale = getFitCanvasScale({ stageShell, image });
+  if (scale === null) {
+    return null;
+  }
+  return applyCanvasScale({ canvas, image, scale });
 }
 
 export function drawAnnotationCanvas({
