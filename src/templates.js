@@ -1,3 +1,4 @@
+import { MIN_ANNOTATION_IMAGE_SIDE } from "./config.js";
 import { normalizePointToImage } from "./geometry.js";
 
 const TEMPLATE_SEGMENTS = {
@@ -228,8 +229,8 @@ function isValidImageSize(imageSize) {
     imageSize &&
     Number.isFinite(imageSize.width) &&
     Number.isFinite(imageSize.height) &&
-    imageSize.width > 0 &&
-    imageSize.height > 0
+    imageSize.width >= MIN_ANNOTATION_IMAGE_SIDE &&
+    imageSize.height >= MIN_ANNOTATION_IMAGE_SIDE
   );
 }
 
@@ -240,7 +241,9 @@ export function buildDefaultFeatureContours({
   createId,
 }) {
   if (!isValidImageSize(imageSize)) {
-    throw new Error("Image size is required before initializing feature contours.");
+    throw new Error(
+      `Image must be at least ${MIN_ANNOTATION_IMAGE_SIDE} x ${MIN_ANNOTATION_IMAGE_SIDE} px before initializing feature contours.`,
+    );
   }
   if (typeof createId !== "function") {
     throw new Error("A contour id factory is required.");

@@ -1,4 +1,5 @@
 import { finiteNumber, normalizePointToImage } from "./geometry.js";
+import { getProgress, PROJECT_JSON_VERSION } from "./project.js";
 
 function getShapeType(closed) {
   return closed ? "polygon" : "linestrip";
@@ -37,6 +38,20 @@ export function buildTaskSchema(labels) {
   };
 }
 
+function serializeContour(contour, labels) {
+  return {
+    id: contour.id,
+    label: contour.label,
+    labelName: labels.find((item) => item.id === contour.label)?.name || contour.label,
+    closed: Boolean(contour.closed),
+    shape_type: getShapeType(contour.closed),
+    points: contour.points.map((point) => ({
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+    })),
+  };
+}
+
 export function buildAnnotationExport({ image, fileName, labels, contours }) {
   return {
     version: "face-contour-annotator-v1",
@@ -52,18 +67,34 @@ export function buildAnnotationExport({ image, fileName, labels, contours }) {
       ...getLabelShapeSchema(label),
       defaultClosed: label.defaultClosed,
     })),
-    contours: contours.map((contour) => ({
-      id: contour.id,
-      label: contour.label,
-      labelName: labels.find((item) => item.id === contour.label)?.name || contour.label,
-      closed: Boolean(contour.closed),
-      shape_type: getShapeType(contour.closed),
-      points: contour.points.map((point) => ({
-        x: Math.round(point.x),
-        y: Math.round(point.y),
-      })),
-    })),
+    contours: contours.map((contour) => serializeContour(contour, labels)),
   };
+}
+
+export function buildProjectExport({ project, labels }) {
+  if (!project || !Array.isArray(project.images)) {
+    throw new Error("A project is required for project export.");
+  }
+  return {
+    version: PROJECT_JSON_VERSION,
+    taskSchema: buildTaskSchema(labels),
+    source: project.source || null,
+    images: project.images.map((image) => ({
+      id: image.id,
+      name: image.name,
+      path: image.path || image.name,
+      width: image.width,
+      height: image.height,
+      status: image.status,
+      contours: serializeContours(image.contours || [], labels),
+    })),
+    progress: getProgress(project.images),
+    currentImageId: project.currentImageId || project.images[0]?.id || null,
+  };
+}
+
+export function serializeContours(contours, labels) {
+  return contours.map((contour) => serializeContour(contour, labels));
 }
 
 function normalizeImportedPoint(point, imageSize) {
@@ -141,6 +172,29 @@ export function normalizeImportedContours({
       points: contour.points.map((point) => normalizeImportedPoint(point, imageSize)),
     };
   });
+}
+
+export function validateContoursForTaskSchema({
+  contours,
+  labels,
+  imageSize,
+  createId = () => "validation_contour",
+  minOpenPoints = 2,
+  minClosedPoints = 3,
+}) {
+  try {
+    normalizeImportedContours({
+      contours,
+      labels,
+      imageSize,
+      createId,
+      minOpenPoints,
+      minClosedPoints,
+    });
+    return [];
+  } catch (error) {
+    return [error instanceof Error ? error.message : "Contours are not valid."];
+  }
 }
 
 export function getImageSize(image) {

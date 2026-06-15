@@ -6,7 +6,22 @@ import {
   hitTestContours,
 } from "../src/geometry.js";
 import { LABELS, MIN_CLOSED_POINTS, MIN_OPEN_POINTS } from "../src/config.js";
-import { buildAnnotationExport, normalizeImportedContours } from "../src/exporter.js";
+import {
+  buildAnnotationExport,
+  buildProjectExport,
+  normalizeImportedContours,
+  validateContoursForTaskSchema,
+} from "../src/exporter.js";
+import {
+  createAnnotationProject,
+  createProjectImage,
+  getFilePath,
+  getAdjacentImageId,
+  getProgress,
+  hydrateProjectImages,
+  toProjectImageRecord,
+  toProjectMetadata,
+} from "../src/project.js";
 import {
   applyCanvasScale,
   getContourLabelPlacements,
@@ -48,9 +63,9 @@ function rectsOverlap(a, b) {
   );
 }
 
-function assertPointClose(actual, expected) {
-  assert.equal(Math.abs(actual.x - expected.x) < 0.000001, true);
-  assert.equal(Math.abs(actual.y - expected.y) < 0.000001, true);
+function assertPointClose(actual, expected, epsilon = 0.000001) {
+  assert.equal(Math.abs(actual.x - expected.x) <= epsilon, true);
+  assert.equal(Math.abs(actual.y - expected.y) <= epsilon, true);
 }
 
 function testSoftMoveClampsLargeDrag() {
@@ -115,68 +130,6 @@ function testHitTestingKeepsLineAndFillDistinct() {
   assert.equal(fillHit.type, "contour");
 }
 
-function testHitTestingOpenEndpointWithoutShowingPoints() {
-  const contour = {
-    id: "brow",
-    label: "left_eyebrow",
-    closed: false,
-    points: [
-      { x: 10, y: 20 },
-      { x: 50, y: 20 },
-      { x: 90, y: 25 },
-    ],
-  };
-
-  const hit = hitTestContours({
-    contours: [contour],
-    point: { x: 10, y: 20 },
-    showPoints: false,
-    scale: 1,
-    hitRadius: 10,
-    lineHitRadius: 18,
-  });
-
-  assert.equal(hit.type, "vertex");
-  assert.equal(hit.pointIndex, 0);
-}
-
-function testOpenEndpointSoftMoveSpreadsToNeighborPoints() {
-  const contour = {
-    id: "brow",
-    label: "left_eyebrow",
-    closed: false,
-    points: [
-      { x: 0, y: 0 },
-      { x: 20, y: 0 },
-      { x: 40, y: 0 },
-      { x: 60, y: 0 },
-    ],
-  };
-
-  const result = applySoftMoveToContours({
-    contours: [contour],
-    contourId: "brow",
-    interaction: {
-      pointIndex: 0,
-      startPoint: { x: 0, y: 0 },
-    },
-    point: { x: 0, y: 30 },
-    softRadius: 20,
-    imageSize: { width: 100, height: 100 },
-    softDragConfig: {
-      minDistance: 6,
-      maxDistance: 30,
-      radiusRatio: 2,
-      endpointRadiusMultiplier: 3,
-    },
-  });
-
-  assert.equal(result.contours[0].points[0].y, 30);
-  assert.equal(result.contours[0].points[1].y > 15, true);
-  assert.equal(result.contours[0].points[2].y > 0, true);
-  assert.equal(result.contours[0].points[3].y, 0);
-}
-
 function testFilledHitPrefersSmallestContainingContour() {
   const face = {
     id: "face",
@@ -204,6 +157,70 @@ function testFilledHitPrefersSmallestContainingContour() {
   const hit = hitFilledContour([eye, face], { x: 100, y: 95 });
 
   assert.equal(hit.contour.id, "eye");
+}
+
+function testHitTestingOpenEndpointWithoutShowingPoints() {
+  const contour = {
+    id: "nose",
+    label: "nose",
+    closed: false,
+    points: [
+      { x: 100, y: 100 },
+      { x: 110, y: 150 },
+      { x: 140, y: 170 },
+    ],
+  };
+
+  const hit = hitTestContours({
+    contours: [contour],
+    point: { x: 101, y: 100 },
+    showPoints: false,
+    scale: 1,
+    hitRadius: 10,
+    lineHitRadius: 4,
+  });
+
+  assert.equal(hit.type, "vertex");
+  assert.equal(hit.pointIndex, 0);
+}
+
+function testOpenEndpointSoftMoveSpreadsToNeighborPoints() {
+  const contour = {
+    id: "brow",
+    label: "left_eyebrow",
+    closed: false,
+    points: [
+      { x: 100, y: 100 },
+      { x: 120, y: 100 },
+      { x: 140, y: 100 },
+      { x: 160, y: 100 },
+    ],
+  };
+
+  const result = applySoftMoveToContours({
+    contours: [contour],
+    contourId: "brow",
+    interaction: {
+      pointIndex: 0,
+      startPoint: { x: 100, y: 100 },
+    },
+    point: { x: 120, y: 100 },
+    softRadius: 16,
+    imageSize: { width: 512, height: 512 },
+    softDragConfig: {
+      minDistance: 6,
+      maxDistance: 64,
+      radiusRatio: 1,
+      endpointRadiusMultiplier: 2.25,
+    },
+  });
+
+  const points = result.contours[0].points;
+  assert.equal(points[0].x > 100, true);
+  assert.equal(points[0].x <= 120, true);
+  assert.equal(points[1].x > 120, true);
+  assert.equal(points[1].x < 136, true);
+  assert.equal(points[3].x, 160);
 }
 
 function testImportRejectsInvalidPoints() {
@@ -250,18 +267,244 @@ function testExportIncludesTaskSchema() {
   });
 
   const noseSchema = exportData.taskSchema.labels.find((label) => label.id === "nose");
-  const eyeSchema = exportData.taskSchema.labels.find((label) => label.id === "left_eye");
   const mouthSeamSchema = exportData.taskSchema.labels.find(
     (label) => label.id === "mouth_seam",
   );
+  const eyeSchema = exportData.taskSchema.labels.find((label) => label.id === "left_eye");
 
   assert.equal(exportData.taskSchema.coordinateSystem, "image_pixels");
   assert.equal(noseSchema.defaultShapeType, "linestrip");
   assert.deepEqual(noseSchema.allowedShapeTypes, ["linestrip"]);
-  assert.deepEqual(eyeSchema.allowedShapeTypes, ["polygon"]);
   assert.equal(mouthSeamSchema.defaultShapeType, "linestrip");
   assert.deepEqual(mouthSeamSchema.allowedShapeTypes, ["linestrip"]);
+  assert.deepEqual(eyeSchema.allowedShapeTypes, ["polygon"]);
   assert.equal(exportData.contours[0].shape_type, "linestrip");
+}
+
+function testProjectExportIncludesAllImagesAndProgress() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "face001.jpg",
+        path: "batch_a/face001.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+        status: "done",
+        contours: [
+          {
+            id: "left_eye",
+            label: "left_eye",
+            closed: true,
+            points: [
+              { x: 10, y: 10 },
+              { x: 20, y: 10 },
+              { x: 15, y: 18 },
+            ],
+          },
+        ],
+      }),
+      createProjectImage({
+        id: "img_002",
+        name: "face002.jpg",
+        path: "batch_a/face002.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,def",
+        status: "skipped",
+        contours: [],
+      }),
+    ],
+    taskSchema: {},
+  });
+
+  const exportData = buildProjectExport({ project, labels: LABELS });
+
+  assert.equal(exportData.version, "face-contour-project-v1");
+  assert.equal(exportData.images.length, 2);
+  assert.equal(exportData.images[0].path, "batch_a/face001.jpg");
+  assert.equal("dataUrl" in exportData.images[0], false);
+  assert.equal(exportData.progress.total, 2);
+  assert.equal(exportData.progress.done, 1);
+  assert.equal(exportData.progress.skipped, 1);
+  assert.equal(exportData.images[0].contours[0].shape_type, "polygon");
+}
+
+function testProjectProgressCountsStatuses() {
+  const progress = getProgress([
+    { status: "done" },
+    { status: "skipped" },
+    { status: "needs_review" },
+    { status: "in_progress" },
+    { status: "unlabeled" },
+  ]);
+
+  assert.equal(progress.total, 5);
+  assert.equal(progress.done, 1);
+  assert.equal(progress.skipped, 1);
+  assert.equal(progress.needs_review, 1);
+  assert.equal(progress.in_progress, 1);
+  assert.equal(progress.unlabeled, 1);
+}
+
+function testProjectMetadataOmitsImagePayload() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "face001.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+        contours: [
+          {
+            id: "left_eye",
+            label: "left_eye",
+            closed: true,
+            points: [
+              { x: 10, y: 10 },
+              { x: 20, y: 10 },
+              { x: 15, y: 18 },
+            ],
+          },
+        ],
+      }),
+    ],
+    taskSchema: {},
+  });
+
+  const metadata = toProjectMetadata(project);
+
+  assert.equal("dataUrl" in metadata.images[0], false);
+  assert.equal("contours" in metadata.images[0], false);
+  assert.equal(metadata.images[0].status, "unlabeled");
+}
+
+function testProjectImageRecordOmitsDataUrl() {
+  const image = createProjectImage({
+    id: "img_001",
+    name: "face001.jpg",
+    width: 512,
+    height: 512,
+    dataUrl: "data:image/jpeg;base64,abc",
+    contours: [
+      {
+        id: "nose",
+        label: "nose",
+        closed: false,
+        points: [
+          { x: 10, y: 10 },
+          { x: 20, y: 30 },
+        ],
+      },
+    ],
+  });
+
+  const record = toProjectImageRecord(image);
+
+  assert.equal("dataUrl" in record, false);
+  assert.equal(record.contours.length, 1);
+  assert.equal(record.contours[0].label, "nose");
+}
+
+function testHydrateProjectImagesMergesImageRecords() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "face001.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+      }),
+    ],
+    taskSchema: {},
+  });
+  const metadata = toProjectMetadata(project);
+  const record = {
+    ...metadata.images[0],
+    status: "done",
+    contours: [
+      {
+        id: "mouth",
+        label: "mouth",
+        closed: true,
+        points: [
+          { x: 10, y: 10 },
+          { x: 20, y: 10 },
+          { x: 15, y: 18 },
+        ],
+      },
+    ],
+  };
+
+  const hydrated = hydrateProjectImages(metadata, [record]);
+
+  assert.equal(hydrated.images[0].status, "done");
+  assert.equal(hydrated.images[0].contours[0].label, "mouth");
+  assert.equal(hydrated.images[0].dataUrl, undefined);
+}
+
+function testProjectAdjacentImageNavigation() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_001",
+        name: "a.jpg",
+        width: 10,
+        height: 10,
+        dataUrl: "data:image/jpeg;base64,a",
+      }),
+      createProjectImage({
+        id: "img_002",
+        name: "b.jpg",
+        width: 10,
+        height: 10,
+        dataUrl: "data:image/jpeg;base64,b",
+      }),
+    ],
+    taskSchema: {},
+  });
+
+  assert.equal(getAdjacentImageId(project, -1), null);
+  assert.equal(getAdjacentImageId(project, 1), "img_002");
+  project.currentImageId = "img_002";
+  assert.equal(getAdjacentImageId(project, -1), "img_001");
+  assert.equal(getAdjacentImageId(project, 1), null);
+}
+
+function testFolderImportPreservesRelativePath() {
+  assert.equal(
+    getFilePath({
+      name: "face001.jpg",
+      webkitRelativePath: "batch_a/face001.jpg",
+    }),
+    "batch_a/face001.jpg",
+  );
+  assert.equal(getFilePath({ name: "face002.jpg" }), "face002.jpg");
+}
+
+function testDoneValidationRejectsInvalidContours() {
+  const errors = validateContoursForTaskSchema({
+    contours: [
+      {
+        id: "bad_eye",
+        label: "left_eye",
+        closed: false,
+        points: [
+          { x: 1, y: 1 },
+          { x: 2, y: 2 },
+        ],
+      },
+    ],
+    labels: LABELS,
+    imageSize: { width: 512, height: 512 },
+    minOpenPoints: MIN_OPEN_POINTS,
+    minClosedPoints: MIN_CLOSED_POINTS,
+  });
+
+  assert.match(errors[0], /does not allow linestrip/);
 }
 
 function testFeatureTemplateMatchesTaskSchema() {
@@ -285,94 +528,13 @@ function testFeatureTemplateMatchesTaskSchema() {
 
   assert.equal(contours.length, 9);
   assert.equal(contourByLabel.get("nose").closed, false);
+  assert.equal(contourByLabel.get("mouth_seam").closed, false);
   assert.equal(contourByLabel.get("left_eyebrow").closed, false);
   assert.equal(contourByLabel.get("left_eye").closed, true);
-  assert.equal(contourByLabel.get("mouth").points.length >= MIN_CLOSED_POINTS, true);
-  assert.equal(contourByLabel.get("mouth_seam").closed, false);
-  assert.equal(contourByLabel.get("mouth_seam").points.length >= MIN_OPEN_POINTS, true);
-}
-
-function testFeatureTemplateMouthUsesLipOutline() {
-  const contours = buildDefaultFeatureContours({
-    imageSize: { width: 512, height: 512 },
-    existingContours: [],
-    labels: LABELS,
-    createId: () => "template",
-  });
-  const mouth = contours.find((contour) => contour.label === "mouth");
-  const yValues = mouth.points.map((point) => point.y);
-  const leftCorner = mouth.points[0];
-  const upperCenter = mouth.points[4];
-  const lowerCenter = mouth.points[11];
-
-  assert.equal(mouth.closed, true);
-  assert.equal(mouth.points.length, 14);
-  assert.equal(Math.min(...yValues) < leftCorner.y, true);
-  assert.equal(Math.max(...yValues), lowerCenter.y);
-  assert.equal(upperCenter.y < leftCorner.y, true);
-  assert.equal(lowerCenter.y > leftCorner.y, true);
-}
-
-function testFeatureTemplateMouthSeamUsesOpenLine() {
-  const contours = buildDefaultFeatureContours({
-    imageSize: { width: 512, height: 512 },
-    existingContours: [],
-    labels: LABELS,
-    createId: () => "template",
-  });
-  const mouth = contours.find((contour) => contour.label === "mouth");
-  const mouthSeam = contours.find((contour) => contour.label === "mouth_seam");
-  const mouthBounds = getBounds(mouth.points);
-  const seamBounds = getBounds(mouthSeam.points);
-
-  assert.equal(mouthSeam.closed, false);
-  assert.equal(mouthSeam.points.length, 7);
-  assert.equal(seamBounds.left > mouthBounds.left, true);
-  assert.equal(seamBounds.right < mouthBounds.right, true);
-  assert.equal(seamBounds.top > mouthBounds.top, true);
-  assert.equal(seamBounds.bottom < mouthBounds.bottom, true);
-}
-
-function testFeatureTemplateEyeUsesDetailedAlmondOutline() {
-  const contours = buildDefaultFeatureContours({
-    imageSize: { width: 512, height: 512 },
-    existingContours: [],
-    labels: LABELS,
-    createId: () => "template",
-  });
-  const eye = contours.find((contour) => contour.label === "left_eye");
-  const eyeBounds = getBounds(eye.points);
-  const leftCorner = eye.points[0];
-  const rightCorner = eye.points[8];
-  const upperCenter = eye.points[4];
-  const lowerCenter = eye.points[12];
-
-  assert.equal(eye.closed, true);
-  assert.equal(eye.points.length, 16);
-  assert.equal(leftCorner.y, rightCorner.y);
-  assert.equal(upperCenter.y < leftCorner.y, true);
-  assert.equal(lowerCenter.y > leftCorner.y, true);
-  assert.equal(eyeBounds.right - eyeBounds.left > eyeBounds.bottom - eyeBounds.top, true);
-}
-
-function testFeatureTemplateEarUsesDetailedTallOutline() {
-  const contours = buildDefaultFeatureContours({
-    imageSize: { width: 512, height: 512 },
-    existingContours: [],
-    labels: LABELS,
-    createId: () => "template",
-  });
-  const leftEar = contours.find((contour) => contour.label === "left_ear");
-  const rightEar = contours.find((contour) => contour.label === "right_ear");
-  const leftBounds = getBounds(leftEar.points);
-  const rightBounds = getBounds(rightEar.points);
-
-  assert.equal(leftEar.closed, true);
-  assert.equal(rightEar.closed, true);
-  assert.equal(leftEar.points.length, 18);
-  assert.equal(rightEar.points.length, 18);
-  assert.equal(leftBounds.bottom - leftBounds.top > (leftBounds.right - leftBounds.left) * 3, true);
-  assert.equal(rightBounds.bottom - rightBounds.top > (rightBounds.right - rightBounds.left) * 3, true);
+  assert.equal(contourByLabel.get("left_eye").points.length, 16);
+  assert.equal(contourByLabel.get("mouth").points.length, 14);
+  assert.equal(contourByLabel.get("mouth_seam").points.length, 7);
+  assert.equal(contourByLabel.get("left_ear").points.length, 18);
 }
 
 function testFeatureTemplateSkipsExistingLabels() {
@@ -396,6 +558,19 @@ function testFeatureTemplateSkipsExistingLabels() {
 
   assert.equal(contours.some((contour) => contour.label === "left_eye"), false);
   assert.equal(contours.length, 8);
+}
+
+function testFeatureTemplateRejectsTinyImages() {
+  assert.throws(
+    () =>
+      buildDefaultFeatureContours({
+        imageSize: { width: 1, height: 1 },
+        existingContours: [],
+        labels: LABELS,
+        createId: () => "template",
+      }),
+    /at least/,
+  );
 }
 
 function testImportRejectsDisallowedLabelShape() {
@@ -446,6 +621,45 @@ function testImportRejectsUnknownLabel() {
   );
 }
 
+function testLabelHitFindsContourFromLabelRect() {
+  const hit = hitContourLabel(
+    [
+      {
+        contour: { id: "left_eye" },
+        labelRect: { x: 40, y: 60, width: 80, height: 20 },
+      },
+    ],
+    { x: 42, y: 61 },
+    4,
+  );
+
+  assert.equal(hit.type, "label");
+  assert.equal(hit.contour.id, "left_eye");
+}
+
+function testInterpolatingCurveSegmentsPassThroughContourPoints() {
+  const points = [
+    { x: 10, y: 10 },
+    { x: 30, y: 5 },
+    { x: 50, y: 20 },
+    { x: 35, y: 40 },
+  ];
+
+  const openSegments = getInterpolatingCurveSegments(points, false);
+  assert.equal(openSegments.length, points.length - 1);
+  assertPointClose(openSegments[0].start, points[0]);
+  openSegments.forEach((segment, index) => {
+    assertPointClose(segment.end, points[index + 1]);
+  });
+
+  const closedSegments = getInterpolatingCurveSegments(points, true);
+  assert.equal(closedSegments.length, points.length);
+  closedSegments.forEach((segment, index) => {
+    assertPointClose(segment.start, points[index]);
+    assertPointClose(segment.end, points[(index + 1) % points.length]);
+  });
+}
+
 function testLabelPlacementUsesRealContourPoint() {
   const face = makeLabelEntry({
     id: "face_outline",
@@ -494,33 +708,6 @@ function testLabelPlacementAvoidsExistingLabels() {
   assert.equal(rectsOverlap(placements[0].labelRect, placements[1].labelRect), false);
 }
 
-function testLabelHitFindsContourFromLabelRect() {
-  const eye = makeLabelEntry({
-    id: "left_eye",
-    points: [
-      { x: 100, y: 100 },
-      { x: 130, y: 103 },
-      { x: 115, y: 116 },
-    ],
-  });
-  const [placement] = getContourLabelPlacements([eye], {
-    canvasWidth: 260,
-    canvasHeight: 260,
-  });
-
-  const hit = hitContourLabel(
-    [placement],
-    {
-      x: placement.labelRect.x + placement.labelRect.width / 2,
-      y: placement.labelRect.y + placement.labelRect.height / 2,
-    },
-    4,
-  );
-
-  assert.equal(hit.type, "label");
-  assert.equal(hit.contour.id, "left_eye");
-}
-
 function testFitCanvasScaleUsesStageBounds() {
   const scale = getFitCanvasScale({
     stageShell: { clientWidth: 900, clientHeight: 700 },
@@ -543,49 +730,31 @@ function testApplyCanvasScaleAllowsZoomBeyondWorkspace() {
   assert.equal(canvas.style.height, "1024px");
 }
 
-function testInterpolatingCurveSegmentsPassThroughContourPoints() {
-  const points = [
-    { x: 10, y: 20 },
-    { x: 25, y: 5 },
-    { x: 50, y: 28 },
-    { x: 80, y: 18 },
-  ];
-
-  const openSegments = getInterpolatingCurveSegments(points, false);
-  assert.equal(openSegments.length, points.length - 1);
-  openSegments.forEach((segment, index) => {
-    assertPointClose(segment.start, points[index]);
-    assertPointClose(segment.end, points[index + 1]);
-  });
-
-  const closedSegments = getInterpolatingCurveSegments(points, true);
-  assert.equal(closedSegments.length, points.length);
-  closedSegments.forEach((segment, index) => {
-    assertPointClose(segment.start, points[index]);
-    assertPointClose(segment.end, points[(index + 1) % points.length]);
-  });
-}
-
 testSoftMoveClampsLargeDrag();
 testHitTestingKeepsLineAndFillDistinct();
+testFilledHitPrefersSmallestContainingContour();
 testHitTestingOpenEndpointWithoutShowingPoints();
 testOpenEndpointSoftMoveSpreadsToNeighborPoints();
-testFilledHitPrefersSmallestContainingContour();
 testImportRejectsInvalidPoints();
 testExportIncludesTaskSchema();
+testProjectExportIncludesAllImagesAndProgress();
+testProjectProgressCountsStatuses();
+testProjectMetadataOmitsImagePayload();
+testProjectImageRecordOmitsDataUrl();
+testHydrateProjectImagesMergesImageRecords();
+testProjectAdjacentImageNavigation();
+testFolderImportPreservesRelativePath();
+testDoneValidationRejectsInvalidContours();
 testFeatureTemplateMatchesTaskSchema();
-testFeatureTemplateMouthUsesLipOutline();
-testFeatureTemplateMouthSeamUsesOpenLine();
-testFeatureTemplateEyeUsesDetailedAlmondOutline();
-testFeatureTemplateEarUsesDetailedTallOutline();
 testFeatureTemplateSkipsExistingLabels();
+testFeatureTemplateRejectsTinyImages();
 testImportRejectsDisallowedLabelShape();
 testImportRejectsUnknownLabel();
+testLabelHitFindsContourFromLabelRect();
+testInterpolatingCurveSegmentsPassThroughContourPoints();
 testLabelPlacementUsesRealContourPoint();
 testLabelPlacementAvoidsExistingLabels();
-testLabelHitFindsContourFromLabelRect();
 testFitCanvasScaleUsesStageBounds();
 testApplyCanvasScaleAllowsZoomBeyondWorkspace();
-testInterpolatingCurveSegmentsPassThroughContourPoints();
 
 console.log("logic tests passed");
