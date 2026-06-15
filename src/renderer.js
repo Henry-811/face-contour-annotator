@@ -1,4 +1,11 @@
-import { getContourSegments, interpolatePoint } from "./geometry.js";
+import {
+  CONTOUR_LINE_WIDTH,
+  DRAFT_LINE_WIDTH,
+  HANDLE_STROKE_WIDTH,
+  SELECTED_CONTOUR_HALO_WIDTH,
+  SELECTED_CONTOUR_LINE_WIDTH,
+} from "./config.js";
+import { getContourSegments, getInterpolatingCurveSegments } from "./geometry.js";
 
 const LABEL_GAP = 5;
 const LABEL_COLLISION_GAP = 3;
@@ -9,6 +16,9 @@ const LABEL_STACK_LIMIT = 3;
 const LABEL_LINE_COLLISION_WEIGHT = 10000;
 const LABEL_LABEL_COLLISION_WEIGHT = 100000;
 const GEOMETRY_EPSILON = 0.000001;
+const CANVAS_PADDING = 36;
+const MAX_FIT_SCALE = 1.75;
+const MIN_CANVAS_SCALE = 0.08;
 
 function getLabel(labels, labelId) {
   return labels.find((label) => label.id === labelId) || labels[0];
@@ -254,6 +264,53 @@ export function getContourLabelPlacements(entries, { canvasWidth, canvasHeight }
   });
 }
 
+export function hitContourLabel(entries, point, padding = 0) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (pointInRect(point, entry.labelRect, padding)) {
+      return { type: "label", contour: entry.contour };
+    }
+  }
+  return null;
+}
+
+export function getDisplayContourEntries({
+  ctx,
+  contours,
+  labels,
+  selectedId,
+  scale,
+  canvasWidth,
+  canvasHeight,
+}) {
+  ctx.save();
+  ctx.font = "12px system-ui, sans-serif";
+  const displayContours = contours
+    .map((contour) => {
+      const displayPoints = contour.points.map((point) => toDisplayPoint(point, scale));
+      if (!displayPoints.length) {
+        return null;
+      }
+      const label = getLabel(labels, contour.label);
+      return {
+        closed: Boolean(contour.closed),
+        contour,
+        displayPoints,
+        isSelected: contour.id === selectedId,
+        label,
+        labelHeight: LABEL_HEIGHT,
+        labelWidth: Math.max(LABEL_MIN_WIDTH, ctx.measureText(label.name).width + LABEL_TEXT_PADDING_X),
+        bounds: getDisplayBounds(displayPoints),
+      };
+    })
+    .filter(Boolean);
+  ctx.restore();
+  return getContourLabelPlacements(displayContours, {
+    canvasHeight,
+    canvasWidth,
+  });
+}
+
 function syncCanvasBackingStore(canvas, dpr) {
   const cssWidth = canvas.clientWidth;
   const cssHeight = canvas.clientHeight;
@@ -271,32 +328,20 @@ function drawSmoothPath(ctx, displayPoints, closed) {
     return;
   }
   ctx.beginPath();
-  if (displayPoints.length < 3) {
-    ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-    displayPoints.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
-    return;
-  }
-  if (closed) {
-    const last = displayPoints[displayPoints.length - 1];
-    const first = displayPoints[0];
-    ctx.moveTo((last.x + first.x) / 2, (last.y + first.y) / 2);
-    displayPoints.forEach((point, index) => {
-      const next = displayPoints[(index + 1) % displayPoints.length];
-      const control = interpolatePoint(point, next, 0.5);
-      ctx.quadraticCurveTo(point.x, point.y, control.x, control.y);
-    });
-    ctx.closePath();
-    return;
-  }
   ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-  for (let index = 1; index < displayPoints.length - 1; index += 1) {
-    const point = displayPoints[index];
-    const next = displayPoints[index + 1];
-    const control = interpolatePoint(point, next, 0.5);
-    ctx.quadraticCurveTo(point.x, point.y, control.x, control.y);
+  getInterpolatingCurveSegments(displayPoints, closed).forEach((segment) => {
+    ctx.bezierCurveTo(
+      segment.control1.x,
+      segment.control1.y,
+      segment.control2.x,
+      segment.control2.y,
+      segment.end.x,
+      segment.end.y,
+    );
+  });
+  if (closed) {
+    ctx.closePath();
   }
-  const last = displayPoints[displayPoints.length - 1];
-  ctx.lineTo(last.x, last.y);
 }
 
 function drawContourPath(ctx, { closed, displayPoints, isSelected, label }) {
@@ -306,13 +351,13 @@ function drawContourPath(ctx, { closed, displayPoints, isSelected, label }) {
   if (isSelected) {
     drawSmoothPath(ctx, displayPoints, closed);
     ctx.strokeStyle = "rgba(255, 255, 255, 0.84)";
-    ctx.lineWidth = 8;
+    ctx.lineWidth = SELECTED_CONTOUR_HALO_WIDTH;
     ctx.stroke();
   }
   drawSmoothPath(ctx, displayPoints, closed);
   ctx.fillStyle = `${label.color}24`;
   ctx.strokeStyle = label.color;
-  ctx.lineWidth = isSelected ? 4 : 2;
+  ctx.lineWidth = isSelected ? SELECTED_CONTOUR_LINE_WIDTH : CONTOUR_LINE_WIDTH;
   if (closed) {
     ctx.fill();
   }
@@ -342,7 +387,7 @@ function drawContourHandles(ctx, { closed, displayPoints, label, maxControlHandl
     ctx.arc(point.x, point.y, isEndpoint ? pointRadius + 1 : pointRadius, 0, Math.PI * 2);
     ctx.fillStyle = isEndpoint ? "#ffffff" : label.color;
     ctx.strokeStyle = label.color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = HANDLE_STROKE_WIDTH;
     ctx.fill();
     ctx.stroke();
   });
@@ -359,7 +404,7 @@ function drawDraft(ctx, draftPoints, hoverPoint, options) {
   ctx.save();
   ctx.strokeStyle = label.color;
   ctx.fillStyle = label.color;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = DRAFT_LINE_WIDTH;
   ctx.setLineDash([8, 6]);
   ctx.beginPath();
   displayPoints.forEach((point, index) => {
@@ -380,24 +425,43 @@ function drawDraft(ctx, draftPoints, hoverPoint, options) {
     ctx.arc(point.x, point.y, index === 0 ? pointRadius + 2 : pointRadius, 0, Math.PI * 2);
     ctx.fillStyle = index === 0 ? "#ffffff" : label.color;
     ctx.strokeStyle = label.color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = HANDLE_STROKE_WIDTH;
     ctx.fill();
     ctx.stroke();
   });
   ctx.restore();
 }
 
-export function fitCanvasToImage({ canvas, stageShell, image }) {
+export function getFitCanvasScale({ stageShell, image }) {
   if (!image) {
     return null;
   }
-  const maxWidth = Math.max(240, stageShell.clientWidth - 36);
-  const maxHeight = Math.max(240, stageShell.clientHeight - 36);
-  const scale = Math.min(maxWidth / image.naturalWidth, maxHeight / image.naturalHeight, 1.75);
-  const nextScale = Math.max(0.08, scale);
+  const maxWidth = Math.max(240, stageShell.clientWidth - CANVAS_PADDING);
+  const maxHeight = Math.max(240, stageShell.clientHeight - CANVAS_PADDING);
+  const scale = Math.min(
+    maxWidth / image.naturalWidth,
+    maxHeight / image.naturalHeight,
+    MAX_FIT_SCALE,
+  );
+  return Math.max(MIN_CANVAS_SCALE, scale);
+}
+
+export function applyCanvasScale({ canvas, image, scale }) {
+  if (!image) {
+    return null;
+  }
+  const nextScale = Math.max(MIN_CANVAS_SCALE, scale);
   canvas.style.width = `${Math.round(image.naturalWidth * nextScale)}px`;
   canvas.style.height = `${Math.round(image.naturalHeight * nextScale)}px`;
   return nextScale;
+}
+
+export function fitCanvasToImage({ canvas, stageShell, image }) {
+  const scale = getFitCanvasScale({ stageShell, image });
+  if (scale === null) {
+    return null;
+  }
+  return applyCanvasScale({ canvas, image, scale });
 }
 
 export function drawAnnotationCanvas({
@@ -423,33 +487,18 @@ export function drawAnnotationCanvas({
     return;
   }
   ctx.drawImage(image, 0, 0, cssWidth, cssHeight);
-  ctx.font = "12px system-ui, sans-serif";
-  const displayContours = contours
-    .map((contour) => {
-      const displayPoints = contour.points.map((point) => toDisplayPoint(point, scale));
-      if (!displayPoints.length) {
-        return null;
-      }
-      const label = getLabel(labels, contour.label);
-      return {
-        closed: Boolean(contour.closed),
-        contour,
-        displayPoints,
-        isSelected: contour.id === selectedId,
-        label,
-        labelHeight: LABEL_HEIGHT,
-        labelWidth: Math.max(LABEL_MIN_WIDTH, ctx.measureText(label.name).width + LABEL_TEXT_PADDING_X),
-        bounds: getDisplayBounds(displayPoints),
-      };
-    })
-    .filter(Boolean);
-  displayContours.forEach((entry) => drawContourPath(ctx, entry));
-  const labelPlacements = getContourLabelPlacements(displayContours, {
-    canvasHeight: cssHeight,
+  const displayEntries = getDisplayContourEntries({
+    ctx,
+    contours,
+    labels,
+    selectedId,
+    scale,
     canvasWidth: cssWidth,
+    canvasHeight: cssHeight,
   });
-  labelPlacements.forEach((entry) => drawContourLabel(ctx, entry));
-  labelPlacements.forEach((entry) => {
+  displayEntries.forEach((entry) => drawContourPath(ctx, entry));
+  displayEntries.forEach((entry) => drawContourLabel(ctx, entry));
+  displayEntries.forEach((entry) => {
     if (entry.isSelected && showPoints) {
       drawContourHandles(ctx, {
         ...entry,

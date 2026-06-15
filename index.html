@@ -98,11 +98,25 @@
 
       .sidebar {
         border-right: 1px solid var(--line);
-        overflow-y: auto;
+        overflow: hidden;
       }
 
       .inspector {
         border-left: 1px solid var(--line);
+      }
+
+      .sidebar-scroll {
+        min-height: 0;
+        flex: 1;
+        overflow-y: auto;
+      }
+
+      .actions-section {
+        flex: 0 0 auto;
+        border-top: 1px solid var(--line);
+        border-bottom: 0;
+        background: rgba(251, 250, 244, 0.98);
+        box-shadow: 0 -12px 24px rgba(31, 38, 34, 0.08);
       }
 
       .brand {
@@ -297,7 +311,7 @@
 
       .workspace {
         display: grid;
-        grid-template-rows: 56px minmax(0, 1fr) 38px;
+        grid-template-rows: auto minmax(0, 1fr) 38px;
         min-width: 0;
         min-height: 0;
       }
@@ -313,10 +327,19 @@
       }
 
       .statusbar {
+        min-height: 38px;
         border-top: 1px solid var(--line);
         border-bottom: 0;
         color: var(--muted);
         font-size: 12px;
+      }
+
+      .topbar {
+        min-height: 56px;
+        flex-wrap: wrap;
+        align-content: center;
+        padding-top: 8px;
+        padding-bottom: 8px;
       }
 
       .file-meta {
@@ -340,14 +363,35 @@
         white-space: nowrap;
       }
 
+      .zoom-controls {
+        display: inline-grid;
+        grid-template-columns: 30px minmax(52px, auto) 30px 44px;
+        align-items: center;
+        gap: 5px;
+        margin-left: auto;
+      }
+
+      .zoom-button {
+        min-width: 30px;
+        min-height: 28px;
+        padding: 0 7px;
+        font-weight: 700;
+      }
+
+      .zoom-value {
+        justify-content: center;
+        min-width: 52px;
+      }
+
       .stage-shell {
         position: relative;
-        display: grid;
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-start;
         min-width: 0;
         min-height: 0;
-        place-items: center;
         padding: 18px;
-        overflow: hidden;
+        overflow: auto;
         background:
           linear-gradient(45deg, rgba(255, 255, 255, 0.45) 25%, transparent 25%),
           linear-gradient(-45deg, rgba(255, 255, 255, 0.45) 25%, transparent 25%),
@@ -367,19 +411,29 @@
         outline-offset: -12px;
       }
 
+      .stage-shell.is-pannable {
+        cursor: grab;
+      }
+
+      .stage-shell.is-panning,
+      .stage-shell.is-panning canvas {
+        cursor: grabbing !important;
+        user-select: none;
+      }
+
       .canvas-wrap {
         position: relative;
         display: grid;
+        flex: 0 0 auto;
         place-items: center;
-        max-width: 100%;
-        max-height: 100%;
+        margin: auto;
         box-shadow: var(--shadow);
       }
 
       canvas {
         display: block;
-        max-width: 100%;
-        max-height: 100%;
+        max-width: none;
+        max-height: none;
         background: #fefefe;
         image-rendering: auto;
         touch-action: none;
@@ -506,6 +560,31 @@
         border-top: 1px solid var(--line);
       }
 
+      .export-debug {
+        margin-top: 10px;
+      }
+
+      .export-debug summary {
+        display: flex;
+        min-height: 34px;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fffef8;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 0 10px;
+        text-transform: uppercase;
+      }
+
+      .export-debug summary:hover {
+        border-color: var(--line-strong);
+        color: var(--ink);
+      }
+
       .json-output {
         width: 100%;
         height: 128px;
@@ -553,7 +632,7 @@
         }
       }
 
-      @media (max-width: 720px) {
+      @media (max-width: 720px) and (pointer: coarse) {
         .app {
           display: block;
         }
@@ -567,84 +646,89 @@
   <body>
     <main class="app">
       <aside class="sidebar">
-        <header class="brand">
-          <h1>Face Contour Lab</h1>
-          <div class="subline">local facial-outline annotation</div>
-        </header>
+        <div class="sidebar-scroll">
+          <header class="brand">
+            <h1>Face Contour Lab</h1>
+            <div class="subline">local facial-outline annotation</div>
+          </header>
 
-        <section class="section">
-          <button class="primary-button" id="openImageButton" type="button">
-            Open image
-          </button>
-          <input id="imageInput" type="file" accept="image/*" hidden />
-        </section>
-
-        <section class="section">
-          <div class="section-title">Label</div>
-          <div class="label-grid" id="labelGrid"></div>
-        </section>
-
-        <section class="section">
-          <div class="section-title">Mode</div>
-          <div class="mode-grid">
-            <button class="mode-button is-active" data-mode="draw" type="button">
-              Draw
+          <section class="section">
+            <button class="primary-button" id="openImageButton" type="button">
+              Open image
             </button>
-            <button class="mode-button" data-mode="refine" type="button">Refine</button>
-          </div>
-        </section>
+            <input id="imageInput" type="file" accept="image/*" hidden />
+          </section>
 
-        <section class="section">
-          <div class="section-title">Current contour</div>
-          <div class="shape-mode-grid">
-            <button class="shape-mode-button" data-shape="open" type="button">Open line</button>
-            <button class="shape-mode-button is-active" data-shape="closed" type="button">
-              Closed region
-            </button>
-          </div>
-          <div class="button-row">
-            <button id="finishDraftButton" type="button">Finish Region</button>
-            <button id="cancelDraftButton" class="danger" type="button">Cancel</button>
-          </div>
-          <div class="shape-hint" id="shapeHint">face outline: closed region mode.</div>
-        </section>
+          <section class="section">
+            <div class="section-title">Label</div>
+            <div class="label-grid" id="labelGrid"></div>
+          </section>
 
-        <section class="section">
-          <div class="section-title">Refine</div>
-          <label class="switch">
-            <span class="switch-label">Smooth edit</span>
-            <input id="softDragToggle" type="checkbox" checked />
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="switch" style="margin-top: 8px">
-            <span class="switch-label">Show points</span>
-            <input id="showPointsToggle" type="checkbox" />
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <div class="range-row">
-            <strong>Influence</strong>
-            <span id="softRadiusValue">40 px</span>
-          </div>
-          <input
-            id="softRadiusInput"
-            class="range-input"
-            type="range"
-            min="16"
-            max="96"
-            step="8"
-            value="40"
-          />
-          <div class="button-row compact" style="margin-top: 10px">
-            <button id="densifyButton" type="button">Add curve points</button>
-          </div>
-        </section>
+          <section class="section">
+            <div class="section-title">Mode</div>
+            <div class="mode-grid">
+              <button class="mode-button is-active" data-mode="draw" type="button">
+                Draw
+              </button>
+              <button class="mode-button" data-mode="refine" type="button">Refine</button>
+            </div>
+          </section>
 
-        <section class="section">
+          <section class="section">
+            <div class="section-title">Current contour</div>
+            <div class="shape-mode-grid">
+              <button class="shape-mode-button" data-shape="open" type="button">Open line</button>
+              <button class="shape-mode-button is-active" data-shape="closed" type="button">
+                Closed region
+              </button>
+            </div>
+            <div class="button-row">
+              <button id="finishDraftButton" type="button">Finish Region</button>
+              <button id="cancelDraftButton" class="danger" type="button">Cancel</button>
+            </div>
+            <div class="shape-hint" id="shapeHint">face outline: closed region mode.</div>
+          </section>
+
+          <section class="section">
+            <div class="section-title">Refine</div>
+            <label class="switch">
+              <span class="switch-label">Smooth edit</span>
+              <input id="softDragToggle" type="checkbox" checked />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+            <label class="switch" style="margin-top: 8px">
+              <span class="switch-label">Show points</span>
+              <input id="showPointsToggle" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+            <div class="range-row">
+              <strong>Influence</strong>
+              <span id="softRadiusValue">40 px</span>
+            </div>
+            <input
+              id="softRadiusInput"
+              class="range-input"
+              type="range"
+              min="4"
+              max="96"
+              step="4"
+              value="40"
+            />
+            <div class="button-row compact" style="margin-top: 10px">
+              <button id="densifyButton" type="button">Add curve points</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="section actions-section">
           <div class="section-title">Actions</div>
           <div class="button-row three">
             <button id="undoButton" type="button">Undo</button>
             <button id="redoButton" type="button">Redo</button>
             <button id="deleteButton" class="danger" type="button">Delete</button>
+          </div>
+          <div class="button-row compact" style="margin-top: 8px">
+            <button id="initializeTemplateButton" type="button">Initialize features</button>
           </div>
           <div class="button-row" style="margin-top: 8px">
             <button id="clearButton" class="danger" type="button">Clear</button>
@@ -657,6 +741,33 @@
         <header class="topbar">
           <div class="file-meta" id="fileMeta">No image loaded</div>
           <span class="pill" id="imageSize">0 x 0</span>
+          <div class="zoom-controls" aria-label="Image zoom controls">
+            <button
+              class="zoom-button"
+              id="zoomOutButton"
+              type="button"
+              title="Zoom image out"
+            >
+              -
+            </button>
+            <span class="pill zoom-value" id="zoomValue">Fit</span>
+            <button
+              class="zoom-button"
+              id="zoomInButton"
+              type="button"
+              title="Zoom image in"
+            >
+              +
+            </button>
+            <button
+              class="zoom-button"
+              id="zoomFitButton"
+              type="button"
+              title="Fit image to the workspace"
+            >
+              Fit
+            </button>
+          </div>
           <span class="pill" id="cursorMeta">x 0, y 0</span>
           <span class="pill" id="draftMeta">0 draft points</span>
         </header>
@@ -694,7 +805,10 @@
             <button id="importButton" type="button">Import JSON</button>
           </div>
           <input id="jsonInput" type="file" accept="application/json,.json" hidden />
-          <textarea class="json-output" id="jsonOutput" readonly spellcheck="false"></textarea>
+          <details class="export-debug">
+            <summary>Preview JSON</summary>
+            <textarea class="json-output" id="jsonOutput" readonly spellcheck="false"></textarea>
+          </details>
         </section>
       </aside>
     </main>

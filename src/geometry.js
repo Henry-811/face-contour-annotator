@@ -49,6 +49,42 @@ export function interpolatePoint(start, end, t) {
   };
 }
 
+const CATMULL_ROM_BEZIER_FACTOR = 1 / 6;
+
+function getWrappedPoint(points, index) {
+  const wrappedIndex = (index + points.length) % points.length;
+  return points[wrappedIndex];
+}
+
+function getOpenPathPoint(points, index) {
+  return points[clamp(index, 0, points.length - 1)];
+}
+
+export function getInterpolatingCurveSegments(points, closed) {
+  if (points.length < 2) {
+    return [];
+  }
+  const segmentCount = closed ? points.length : points.length - 1;
+  return Array.from({ length: segmentCount }, (_, index) => {
+    const p0 = closed ? getWrappedPoint(points, index - 1) : getOpenPathPoint(points, index - 1);
+    const p1 = closed ? getWrappedPoint(points, index) : getOpenPathPoint(points, index);
+    const p2 = closed ? getWrappedPoint(points, index + 1) : getOpenPathPoint(points, index + 1);
+    const p3 = closed ? getWrappedPoint(points, index + 2) : getOpenPathPoint(points, index + 2);
+    return {
+      start: { ...p1 },
+      control1: {
+        x: p1.x + (p2.x - p0.x) * CATMULL_ROM_BEZIER_FACTOR,
+        y: p1.y + (p2.y - p0.y) * CATMULL_ROM_BEZIER_FACTOR,
+      },
+      control2: {
+        x: p2.x - (p3.x - p1.x) * CATMULL_ROM_BEZIER_FACTOR,
+        y: p2.y - (p3.y - p1.y) * CATMULL_ROM_BEZIER_FACTOR,
+      },
+      end: { ...p2 },
+    };
+  });
+}
+
 export function getSegmentDistance(point, start, end) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -138,6 +174,28 @@ export function getSoftDragLimit(softRadius, { minDistance, maxDistance, radiusR
   return clamp(softRadius * radiusRatio, minDistance, maxDistance);
 }
 
+function isOpenEndpointIndex(contour, pointIndex) {
+  return !contour.closed && (pointIndex === 0 || pointIndex === contour.points.length - 1);
+}
+
+function isOpenEndpointSegment(contour, interaction) {
+  if (contour.closed || interaction.segmentIndex === undefined) {
+    return false;
+  }
+  const lastSegmentIndex = contour.points.length - 2;
+  return (
+    (interaction.segmentIndex === 0 && interaction.segmentT <= 0.2) ||
+    (interaction.segmentIndex === lastSegmentIndex && interaction.segmentT >= 0.8)
+  );
+}
+
+export function isOpenEndpointInteraction(contour, interaction) {
+  return (
+    isOpenEndpointIndex(contour, interaction.pointIndex) ||
+    isOpenEndpointSegment(contour, interaction)
+  );
+}
+
 export function clampVector(dx, dy, maxLength) {
   const length = Math.hypot(dx, dy);
   if (!Number.isFinite(length) || length === 0 || length <= maxLength) {
@@ -209,11 +267,10 @@ export function hitFilledContour(contours, point) {
 export function hitTestContours({ contours, point, showPoints, scale, hitRadius, lineHitRadius }) {
   for (let i = contours.length - 1; i >= 0; i -= 1) {
     const contour = contours[i];
-    if (showPoints) {
-      for (let pointIndex = 0; pointIndex < contour.points.length; pointIndex += 1) {
-        if (distance(point, contour.points[pointIndex]) <= hitRadius / scale) {
-          return { type: "vertex", contour, pointIndex };
-        }
+    for (let pointIndex = 0; pointIndex < contour.points.length; pointIndex += 1) {
+      const canHitPoint = showPoints || isOpenEndpointIndex(contour, pointIndex);
+      if (canHitPoint && distance(point, contour.points[pointIndex]) <= hitRadius / scale) {
+        return { type: "vertex", contour, pointIndex };
       }
     }
     for (const segment of getContourSegments(contour)) {
@@ -278,7 +335,11 @@ export function applySoftMoveToContours({
         points: contour.points.map((item) => ({ ...item })),
       };
     }
-    const radius = Math.max(1, softRadius);
+    const endpointMultiplier = finiteNumber(softDragConfig.endpointRadiusMultiplier, 1);
+    const radius = Math.max(
+      1,
+      softRadius * (isOpenEndpointInteraction(contour, interaction) ? endpointMultiplier : 1),
+    );
     const anchorOffset = getAnchorOffset(contour, interaction);
     return {
       ...contour,

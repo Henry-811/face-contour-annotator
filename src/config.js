@@ -40,6 +40,14 @@ export const LABELS = [
     allowedShapeTypes: ["polygon", "linestrip"],
   },
   {
+    id: "mouth_seam",
+    name: "mouth seam",
+    color: "#c85f8d",
+    defaultClosed: false,
+    defaultShapeType: "linestrip",
+    allowedShapeTypes: ["linestrip"],
+  },
+  {
     id: "left_eyebrow",
     name: "left eyebrow",
     color: "#6f5bb7",
@@ -75,14 +83,28 @@ export const LABELS = [
 
 export const MIN_OPEN_POINTS = 2;
 export const MIN_CLOSED_POINTS = 3;
-export const POINT_RADIUS = 5;
+export const POINT_RADIUS = 2;
 export const HIT_RADIUS = 10;
 export const LINE_HIT_RADIUS = 18;
+export const LABEL_HIT_PADDING = 4;
+export const CONTOUR_LINE_WIDTH = 1.5;
+export const SELECTED_CONTOUR_LINE_WIDTH = 2.5;
+export const SELECTED_CONTOUR_HALO_WIDTH = 5;
+export const HANDLE_STROKE_WIDTH = 1.5;
+export const DRAFT_LINE_WIDTH = 1.5;
+export const DEFAULT_SOFT_RADIUS = 40;
+export const SOFT_RADIUS_MIN = 4;
+export const SOFT_RADIUS_MAX = 96;
+export const SOFT_RADIUS_STEP = 4;
 export const SOFT_DRAG_MIN_DISTANCE = 6;
 export const SOFT_DRAG_MAX_DISTANCE = 32;
 export const SOFT_DRAG_RADIUS_RATIO = 0.75;
+export const OPEN_ENDPOINT_SOFT_RADIUS_MULTIPLIER = 2.25;
 export const DENSIFY_SPACING = 10;
 export const MAX_CONTROL_HANDLES = 180;
+export const IMAGE_ZOOM_STEP = 1.25;
+export const MIN_IMAGE_ZOOM = 0.4;
+export const MAX_IMAGE_ZOOM = 5;
 export const DRAFT_STORAGE_KEY = "face-contour-lab-draft-v1";
 export const DRAFT_DB_NAME = "face-contour-lab";
 export const DRAFT_DB_VERSION = 1;
