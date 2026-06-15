@@ -166,6 +166,10 @@
         grid-template-columns: 1fr 1fr 1fr;
       }
 
+      .button-row.stack {
+        grid-template-columns: 1fr;
+      }
+
       .button-row.compact {
         grid-template-columns: 1fr;
       }
@@ -295,9 +299,84 @@
         line-height: 1.35;
       }
 
+      .project-summary {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .progress-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .queue-list {
+        display: grid;
+        max-height: 168px;
+        gap: 6px;
+        margin-top: 10px;
+        overflow-y: auto;
+      }
+
+      .queue-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        width: 100%;
+        min-height: 34px;
+        padding: 7px 8px;
+        text-align: left;
+      }
+
+      .queue-item.is-active {
+        border-color: var(--accent);
+        box-shadow: inset 4px 0 0 var(--accent);
+      }
+
+      .queue-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .status-badge {
+        min-width: 74px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 7px;
+        background: #fffef8;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        text-align: center;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .status-badge.done {
+        border-color: rgba(8, 126, 107, 0.36);
+        color: var(--accent);
+      }
+
+      .status-badge.skipped {
+        border-color: rgba(102, 112, 107, 0.36);
+      }
+
+      .status-badge.needs_review {
+        border-color: rgba(216, 75, 42, 0.34);
+        color: var(--hot);
+      }
+
       .workspace {
         display: grid;
-        grid-template-rows: 56px minmax(0, 1fr) 38px;
+        grid-template-rows: auto minmax(0, 1fr) 38px;
         min-width: 0;
         min-height: 0;
       }
@@ -313,10 +392,19 @@
       }
 
       .statusbar {
+        min-height: 38px;
         border-top: 1px solid var(--line);
         border-bottom: 0;
         color: var(--muted);
         font-size: 12px;
+      }
+
+      .topbar {
+        min-height: 56px;
+        flex-wrap: wrap;
+        align-content: center;
+        padding-top: 8px;
+        padding-bottom: 8px;
       }
 
       .file-meta {
@@ -340,14 +428,35 @@
         white-space: nowrap;
       }
 
+      .zoom-controls {
+        display: inline-grid;
+        grid-template-columns: 30px minmax(52px, auto) 30px 44px;
+        align-items: center;
+        gap: 5px;
+        margin-left: auto;
+      }
+
+      .zoom-button {
+        min-width: 30px;
+        min-height: 28px;
+        padding: 0 7px;
+        font-weight: 700;
+      }
+
+      .zoom-value {
+        justify-content: center;
+        min-width: 52px;
+      }
+
       .stage-shell {
         position: relative;
-        display: grid;
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-start;
         min-width: 0;
         min-height: 0;
-        place-items: center;
         padding: 18px;
-        overflow: hidden;
+        overflow: auto;
         background:
           linear-gradient(45deg, rgba(255, 255, 255, 0.45) 25%, transparent 25%),
           linear-gradient(-45deg, rgba(255, 255, 255, 0.45) 25%, transparent 25%),
@@ -367,19 +476,29 @@
         outline-offset: -12px;
       }
 
+      .stage-shell.is-pannable {
+        cursor: grab;
+      }
+
+      .stage-shell.is-panning,
+      .stage-shell.is-panning canvas {
+        cursor: grabbing !important;
+        user-select: none;
+      }
+
       .canvas-wrap {
         position: relative;
         display: grid;
+        flex: 0 0 auto;
         place-items: center;
-        max-width: 100%;
-        max-height: 100%;
+        margin: auto;
         box-shadow: var(--shadow);
       }
 
       canvas {
         display: block;
-        max-width: 100%;
-        max-height: 100%;
+        max-width: none;
+        max-height: none;
         background: #fefefe;
         image-rendering: auto;
         touch-action: none;
@@ -553,7 +672,7 @@
         }
       }
 
-      @media (max-width: 720px) {
+      @media (max-width: 720px) and (pointer: coarse) {
         .app {
           display: block;
         }
@@ -573,10 +692,37 @@
         </header>
 
         <section class="section">
-          <button class="primary-button" id="openImageButton" type="button">
-            Open image
-          </button>
-          <input id="imageInput" type="file" accept="image/*" hidden />
+          <div class="button-row stack">
+            <button class="primary-button" id="openImageButton" type="button">
+              Open images
+            </button>
+            <button id="openFolderButton" type="button">Open folder</button>
+          </div>
+          <input id="imageInput" type="file" accept="image/*" multiple hidden />
+          <input id="folderInput" type="file" accept="image/*" multiple webkitdirectory hidden />
+        </section>
+
+        <section class="section">
+          <div class="section-title">
+            Project
+            <span class="pill" id="projectPosition">0 / 0</span>
+          </div>
+          <div class="project-summary">
+            <div class="progress-line">
+              <span id="projectName">No project</span>
+              <span id="projectProgress">0 done</span>
+            </div>
+            <div class="button-row">
+              <button id="previousImageButton" type="button">Previous</button>
+              <button id="nextImageButton" type="button">Next</button>
+            </div>
+            <div class="button-row three">
+              <button id="markDoneButton" type="button">Done</button>
+              <button id="skipImageButton" type="button">Skip</button>
+              <button id="needsReviewButton" type="button">Review</button>
+            </div>
+          </div>
+          <div class="queue-list" id="imageQueueList"></div>
         </section>
 
         <section class="section">
@@ -646,6 +792,9 @@
             <button id="redoButton" type="button">Redo</button>
             <button id="deleteButton" class="danger" type="button">Delete</button>
           </div>
+          <div class="button-row compact" style="margin-top: 8px">
+            <button id="initializeTemplateButton" type="button">Initialize features</button>
+          </div>
           <div class="button-row" style="margin-top: 8px">
             <button id="clearButton" class="danger" type="button">Clear</button>
             <button id="fitButton" type="button">Fit</button>
@@ -657,6 +806,33 @@
         <header class="topbar">
           <div class="file-meta" id="fileMeta">No image loaded</div>
           <span class="pill" id="imageSize">0 x 0</span>
+          <div class="zoom-controls" aria-label="Image zoom controls">
+            <button
+              class="zoom-button"
+              id="zoomOutButton"
+              type="button"
+              title="Zoom image out"
+            >
+              -
+            </button>
+            <span class="pill zoom-value" id="zoomValue">Fit</span>
+            <button
+              class="zoom-button"
+              id="zoomInButton"
+              type="button"
+              title="Zoom image in"
+            >
+              +
+            </button>
+            <button
+              class="zoom-button"
+              id="zoomFitButton"
+              type="button"
+              title="Fit image to the workspace"
+            >
+              Fit
+            </button>
+          </div>
           <span class="pill" id="cursorMeta">x 0, y 0</span>
           <span class="pill" id="draftMeta">0 draft points</span>
         </header>
@@ -669,7 +845,7 @@
             <div class="empty-card">
               <strong>Drop a face image</strong>
               <button id="emptyOpenButton" class="primary-button" type="button">
-                Open image
+                Open images
               </button>
             </div>
           </div>
@@ -690,7 +866,7 @@
 
         <section class="export-panel">
           <div class="button-row">
-            <button id="downloadButton" type="button">Download JSON</button>
+            <button id="downloadButton" type="button">Export Project JSON</button>
             <button id="importButton" type="button">Import JSON</button>
           </div>
           <input id="jsonInput" type="file" accept="application/json,.json" hidden />
