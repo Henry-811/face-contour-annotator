@@ -1,2 +1,4 @@
 /run/
 /run.zip
+__pycache__/
+*.pyc
