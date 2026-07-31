@@ -29,6 +29,11 @@ import {
   hitContourLabel,
 } from "../src/renderer.js";
 import { buildDefaultFeatureContours } from "../src/templates.js";
+import {
+  buildBasecolorUrlForFbxName,
+  extractNumericAssetId,
+  normalizeViewerPose,
+} from "../tools/fbx-viewer-utils.js";
 
 function getBounds(points) {
   const xs = points.map((point) => point.x);
@@ -730,6 +735,36 @@ function testApplyCanvasScaleAllowsZoomBeyondWorkspace() {
   assert.equal(canvas.style.height, "1024px");
 }
 
+function testFbxViewerExtractsNumericTextureId() {
+  assert.equal(extractNumericAssetId("0_00000.fbx"), "0");
+  assert.equal(extractNumericAssetId("nested/path/123_00000.fbx"), "123");
+  assert.equal(extractNumericAssetId("S_Child_NChar_NanChild_00000.fbx"), null);
+}
+
+function testFbxViewerBuildsBasecolorUrl() {
+  assert.equal(
+    buildBasecolorUrlForFbxName("123_00000.fbx", "../run/run/motherasset/ori/"),
+    "../run/run/motherasset/ori/123/Basecolor.png",
+  );
+  assert.equal(buildBasecolorUrlForFbxName("S_Child_NChar_NanChild_00000.fbx", "textures"), "");
+}
+
+function testFbxViewerPoseKeepsCombinedAnglesInBudget() {
+  const pose = normalizeViewerPose({
+    modelYaw: 18,
+    cameraYaw: 12,
+    modelPitch: -15,
+    cameraPitch: -10,
+    modelRoll: 5,
+    cameraRoll: -3,
+  });
+
+  assert.equal(Math.abs(pose.modelYaw + pose.cameraYaw) <= 20, true);
+  assert.equal(Math.abs(pose.modelPitch + pose.cameraPitch) <= 20, true);
+  assert.equal(pose.modelRoll, 5);
+  assert.equal(pose.cameraRoll, -3);
+}
+
 testSoftMoveClampsLargeDrag();
 testHitTestingKeepsLineAndFillDistinct();
 testFilledHitPrefersSmallestContainingContour();
@@ -756,5 +791,8 @@ testLabelPlacementUsesRealContourPoint();
 testLabelPlacementAvoidsExistingLabels();
 testFitCanvasScaleUsesStageBounds();
 testApplyCanvasScaleAllowsZoomBeyondWorkspace();
+testFbxViewerExtractsNumericTextureId();
+testFbxViewerBuildsBasecolorUrl();
+testFbxViewerPoseKeepsCombinedAnglesInBudget();
 
 console.log("logic tests passed");

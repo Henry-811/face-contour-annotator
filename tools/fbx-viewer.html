@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FBX Orthographic Viewer</title>
+    <link rel="icon" href="data:," />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/",
+          "fflate": "https://unpkg.com/fflate@0.8.2/esm/browser.js"
+        }
+      }
+    </script>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #eef1ed;
+        --panel: #fbfaf4;
+        --ink: #1d2622;
+        --muted: #66706b;
+        --line: #cdd3ce;
+        --line-strong: #9ea8a2;
+        --accent: #087e6b;
+        --accent-ink: #ffffff;
+        --hot: #d84b2a;
+        --viewport: #303633;
+        --radius: 6px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "Aptos", "Bahnschrift", "Segoe UI", sans-serif;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button,
+      .file-button {
+        min-height: 34px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fffef8;
+        color: var(--ink);
+        cursor: pointer;
+      }
+
+      button:hover,
+      .file-button:hover {
+        border-color: var(--line-strong);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
+      }
+
+      .viewer-app {
+        display: grid;
+        grid-template-columns: 320px minmax(360px, 1fr) 300px;
+        height: 100vh;
+        min-height: 620px;
+      }
+
+      .panel {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        overflow: hidden;
+        border-color: var(--line);
+        background: rgba(251, 250, 244, 0.98);
+      }
+
+      .panel.left {
+        border-right: 1px solid var(--line);
+      }
+
+      .panel.right {
+        border-left: 1px solid var(--line);
+      }
+
+      .panel-scroll {
+        min-height: 0;
+        overflow: auto;
+      }
+
+      .brand {
+        padding: 20px 18px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-family: Georgia, "Aptos Display", serif;
+        font-size: 24px;
+        letter-spacing: 0;
+      }
+
+      .brand a {
+        display: inline-block;
+        margin-top: 8px;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .section {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .section-title {
+        margin-bottom: 10px;
+        color: #36413c;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .button-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .button-grid.stack {
+        grid-template-columns: 1fr;
+      }
+
+      .primary-button {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--accent-ink);
+        font-weight: 700;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .field label,
+      .field-name {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .text-input,
+      select {
+        width: 100%;
+        min-height: 34px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fff;
+        color: var(--ink);
+        padding: 0 9px;
+      }
+
+      .file-button {
+        display: grid;
+        place-items: center;
+        padding: 0 10px;
+        text-align: center;
+      }
+
+      .file-input {
+        display: none;
+      }
+
+      .slider-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 54px;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .slider-row label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .slider-row output {
+        color: var(--ink);
+        font-size: 12px;
+        text-align: right;
+      }
+
+      .range-input {
+        grid-column: 1 / -1;
+        width: 100%;
+        accent-color: var(--accent);
+      }
+
+      .toggle {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .stage {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+        background:
+          linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+          linear-gradient(-45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
+          linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
+          var(--viewport);
+        background-position:
+          0 0,
+          0 16px,
+          16px -16px,
+          -16px 0;
+        background-size: 32px 32px;
+      }
+
+      #viewerCanvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+
+      .statusbar {
+        position: absolute;
+        right: 16px;
+        bottom: 14px;
+        left: 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 34px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: var(--radius);
+        background: rgba(20, 24, 22, 0.76);
+        color: #eaf0e9;
+        font-size: 12px;
+        padding: 0 12px;
+        pointer-events: none;
+      }
+
+      .statusbar.is-error {
+        color: #ffd8cf;
+      }
+
+      .meta-list {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .meta-row {
+        display: grid;
+        grid-template-columns: 92px minmax(0, 1fr);
+        gap: 8px;
+      }
+
+      .meta-row dt {
+        color: #36413c;
+        font-weight: 700;
+      }
+
+      .meta-row dd {
+        min-width: 0;
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .json-output {
+        width: 100%;
+        height: 174px;
+        resize: none;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #242b27;
+        color: #eaf0e9;
+        font-family: "Cascadia Mono", Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.42;
+        padding: 10px;
+      }
+
+      @media (max-width: 1000px) {
+        body {
+          overflow: auto;
+        }
+
+        .viewer-app {
+          grid-template-columns: 300px minmax(360px, 1fr);
+          grid-template-rows: minmax(560px, 72vh) auto;
+          height: auto;
+          min-height: 100vh;
+        }
+
+        .panel.right {
+          grid-column: 1 / -1;
+          border-top: 1px solid var(--line);
+          border-left: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="viewer-app">
+      <aside class="panel left">
+        <header class="brand">
+          <h1>FBX Orthographic Viewer</h1>
+          <a href="../index.html">Back to Face Contour Lab</a>
+        </header>
+
+        <div class="panel-scroll">
+          <section class="section">
+            <div class="section-title">Samples</div>
+            <div class="button-grid">
+              <button id="loadNumericSampleButton" class="primary-button" type="button">
+                Numeric FBX
+              </button>
+              <button id="loadNamedSampleButton" type="button">Named FBX</button>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-title">Source</div>
+            <div class="button-grid stack">
+              <label class="file-button" for="fbxFileInput">Open FBX file</label>
+              <input id="fbxFileInput" class="file-input" type="file" accept=".fbx" />
+              <label class="file-button" for="textureFileInput">Open Basecolor PNG</label>
+              <input id="textureFileInput" class="file-input" type="file" accept="image/png,image/jpeg" />
+            </div>
+
+            <div class="field">
+              <label for="fbxUrlInput">FBX URL</label>
+              <input
+                id="fbxUrlInput"
+                class="text-input"
+                type="text"
+                value="../run/run/fbx/0_00000.fbx"
+                spellcheck="false"
+              />
+            </div>
+            <div class="field">
+              <label for="textureUrlInput">Basecolor URL</label>
+              <input
+                id="textureUrlInput"
+                class="text-input"
+                type="text"
+                value="../run/run/motherasset/ori/0/Basecolor.png"
+                spellcheck="false"
+              />
+            </div>
+            <div class="button-grid" style="margin-top: 10px">
+              <button id="loadUrlButton" type="button">Load URL</button>
+              <button id="autoTextureButton" type="button">Auto Texture</button>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-title">Material</div>
+            <select id="materialModeSelect">
+              <option value="auto">Auto texture / source material</option>
+              <option value="basecolor">Force Basecolor</option>
+              <option value="clay">Clay material</option>
+              <option value="source">Source material</option>
+            </select>
+            <label class="toggle">
+              <input id="wireframeToggle" type="checkbox" />
+              <span>Wireframe</span>
+            </label>
+          </section>
+
+          <section class="section">
+            <div class="section-title">View</div>
+            <div class="button-grid">
+              <button data-view="frontZ" type="button">Front Z</button>
+              <button data-view="frontY" type="button">Front Y</button>
+              <button data-view="sideX" type="button">Side X</button>
+              <button data-view="threeQuarter" type="button">3/4</button>
+            </div>
+            <div class="button-grid" style="margin-top: 8px">
+              <button id="fitButton" type="button">Fit</button>
+              <button id="exportPngButton" type="button">Export PNG</button>
+            </div>
+            <label class="toggle">
+              <input id="helpersToggle" type="checkbox" checked />
+              <span>Axes and box</span>
+            </label>
+          </section>
+        </div>
+      </aside>
+
+      <section class="stage">
+        <canvas id="viewerCanvas"></canvas>
+        <div id="statusText" class="statusbar">Ready.</div>
+      </section>
+
+      <aside class="panel right">
+        <div class="panel-scroll">
+          <section class="section">
+            <div class="section-title">Pose</div>
+            <div class="slider-row">
+              <label for="modelYawInput">Model yaw</label>
+              <output id="modelYawOutput">0 deg</output>
+              <input id="modelYawInput" class="range-input" type="range" min="-25" max="25" step="1" value="0" />
+            </div>
+            <div class="slider-row">
+              <label for="modelPitchInput">Model pitch</label>
+              <output id="modelPitchOutput">0 deg</output>
+              <input id="modelPitchInput" class="range-input" type="range" min="-25" max="25" step="1" value="0" />
+            </div>
+            <div class="slider-row">
+              <label for="modelRollInput">Model roll</label>
+              <output id="modelRollOutput">0 deg</output>
+              <input id="modelRollInput" class="range-input" type="range" min="-15" max="15" step="1" value="0" />
+            </div>
+            <div class="slider-row">
+              <label for="cameraYawInput">Camera yaw</label>
+              <output id="cameraYawOutput">0 deg</output>
+              <input id="cameraYawInput" class="range-input" type="range" min="-20" max="20" step="1" value="0" />
+            </div>
+            <div class="slider-row">
+              <label for="cameraPitchInput">Camera pitch</label>
+              <output id="cameraPitchOutput">0 deg</output>
+              <input id="cameraPitchInput" class="range-input" type="range" min="-20" max="20" step="1" value="0" />
+            </div>
+            <div class="slider-row">
+              <label for="cameraRollInput">Camera roll</label>
+              <output id="cameraRollOutput">0 deg</output>
+              <input id="cameraRollInput" class="range-input" type="range" min="-10" max="10" step="1" value="0" />
+            </div>
+            <div class="button-grid" style="margin-top: 10px">
+              <button id="zeroPoseButton" type="button">Zero</button>
+              <button id="samplePoseButton" type="button">Sample</button>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-title">Model Info</div>
+            <dl class="meta-list">
+              <div class="meta-row">
+                <dt>FBX</dt>
+                <dd id="fbxMeta">None</dd>
+              </div>
+              <div class="meta-row">
+                <dt>Texture</dt>
+                <dd id="textureMeta">None</dd>
+              </div>
+              <div class="meta-row">
+                <dt>Meshes</dt>
+                <dd id="meshMeta">0</dd>
+              </div>
+              <div class="meta-row">
+                <dt>Vertices</dt>
+                <dd id="vertexMeta">0</dd>
+              </div>
+              <div class="meta-row">
+                <dt>Bounds</dt>
+                <dd id="boundsMeta">0 x 0 x 0</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="section">
+            <div class="section-title">Current Render Config</div>
+            <textarea id="poseJsonOutput" class="json-output" readonly spellcheck="false"></textarea>
+          </section>
+        </div>
+      </aside>
+    </main>
+
+    <script type="module" src="./fbx-viewer.js"></script>
+  </body>
+</html>
