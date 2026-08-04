@@ -94,6 +94,7 @@
       .sidebar,
       .inspector {
         display: flex;
+        min-height: 0;
         min-width: 0;
         flex-direction: column;
         border-color: var(--line);
@@ -116,8 +117,10 @@
         overflow-y: auto;
       }
 
-      .actions-section {
+      .section.actions-section {
         flex: 0 0 auto;
+        padding-top: 12px;
+        padding-bottom: 12px;
         border-top: 1px solid var(--line);
         border-bottom: 0;
         background: rgba(251, 250, 244, 0.98);
@@ -320,6 +323,8 @@
 
       .project-summary {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        min-width: 0;
         gap: 6px;
         color: var(--muted);
         font-size: 12px;
@@ -327,6 +332,7 @@
 
       .progress-line {
         display: flex;
+        min-width: 0;
         align-items: center;
         justify-content: space-between;
         gap: 10px;
@@ -672,6 +678,121 @@
         text-transform: uppercase;
       }
 
+      .sidebar-disclosure {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 254, 248, 0.72);
+      }
+
+      .sidebar-disclosure summary {
+        display: flex;
+        min-height: 38px;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 700;
+        list-style: none;
+      }
+
+      .sidebar-disclosure summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .sidebar-disclosure summary::after {
+        margin-left: auto;
+        color: var(--muted);
+        content: "+";
+        font-size: 18px;
+        font-weight: 400;
+        line-height: 1;
+      }
+
+      .sidebar-disclosure[open] summary {
+        border-bottom: 1px solid var(--line);
+      }
+
+      .sidebar-disclosure[open] summary::after {
+        content: "−";
+      }
+
+      .sidebar-disclosure:not([open]) > .disclosure-body {
+        display: none;
+      }
+
+      .disclosure-copy {
+        display: grid;
+        min-width: 0;
+        gap: 2px;
+      }
+
+      .disclosure-caption,
+      .disclosure-meta {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 400;
+      }
+
+      .disclosure-meta {
+        margin-left: auto;
+        white-space: nowrap;
+      }
+
+      .disclosure-body {
+        display: grid;
+        gap: 8px;
+        padding: 10px;
+      }
+
+      .project-section .project-summary {
+        margin-bottom: 10px;
+      }
+
+      .project-name {
+        flex: 1 1 0;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ink);
+        font-size: 13px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #projectProgress {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
+      .image-navigation {
+        display: grid;
+        gap: 8px;
+      }
+
+      .queue-disclosure {
+        margin-top: 10px;
+      }
+
+      .queue-disclosure .queue-list {
+        margin-top: 0;
+      }
+
+      .annotation-heading {
+        padding: 14px 18px 6px;
+        color: var(--accent);
+        font-family: Georgia, "Aptos Display", serif;
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .annotation-controls .section {
+        padding-top: 12px;
+      }
+
+      .more-actions-section {
+        padding-top: 10px;
+      }
+
       .transfer-help {
         margin: 5px 0 10px;
         color: var(--muted);
@@ -772,7 +893,8 @@
         text-align: center;
       }
 
-      .hidden {
+      .hidden,
+      [hidden] {
         display: none !important;
       }
 
@@ -804,6 +926,26 @@
           height: 68vh;
         }
 
+        .brand {
+          padding: 18px 16px 14px;
+        }
+
+        .section {
+          padding-right: 16px;
+          padding-left: 16px;
+        }
+
+        .annotation-heading {
+          padding-right: 16px;
+          padding-left: 16px;
+        }
+
+        .label-grid {
+          grid-template-columns: repeat(5, minmax(148px, 1fr));
+          padding-bottom: 4px;
+          overflow-x: auto;
+        }
+
       }
     </style>
   </head>
@@ -816,14 +958,34 @@
             <div class="subline">local facial-outline annotation</div>
           </header>
 
-          <section class="section">
-            <div class="button-row stack">
-              <button class="primary-button" id="openImageButton" type="button">
-                Open images
-              </button>
-              <button id="openFolderButton" type="button">Open folder</button>
-              <button id="openZipButton" type="button">Open ZIP</button>
+          <section class="section project-section">
+            <div class="section-title">Image set</div>
+            <div class="project-summary" id="projectSummary" hidden>
+              <div class="progress-line">
+                <strong class="project-name" id="projectName">No image set</strong>
+                <span id="projectProgress">0 done, 0 active</span>
+              </div>
+              <div class="save-state" id="projectSaveState" data-state="idle">
+                No local image set
+              </div>
             </div>
+            <details class="sidebar-disclosure" id="sourceDisclosure" open>
+              <summary>
+                <span class="disclosure-copy">
+                  <span id="sourceDisclosureLabel">Open image set</span>
+                  <span class="disclosure-caption">Folder recommended · ZIP or image files</span>
+                </span>
+              </summary>
+              <div class="disclosure-body">
+                <button class="primary-button" id="openFolderButton" type="button">
+                  Open folder
+                </button>
+                <div class="button-row">
+                  <button id="openImageButton" type="button">Open images</button>
+                  <button id="openZipButton" type="button">Open ZIP</button>
+                </div>
+              </div>
+            </details>
             <input
               id="imageInput"
               type="file"
@@ -842,19 +1004,12 @@
             <input id="zipInput" type="file" accept="application/zip,.zip" hidden />
           </section>
 
-          <section class="section">
+          <section class="section" id="imageWorkflowSection" hidden>
             <div class="section-title">
               Images
               <span class="pill" id="projectPosition">0 / 0</span>
             </div>
-            <div class="project-summary">
-              <div class="progress-line">
-                <span id="projectName">No image set</span>
-                <span id="projectProgress">0 done</span>
-              </div>
-              <div class="save-state" id="projectSaveState" data-state="idle">
-                No local image set
-              </div>
+            <div class="image-navigation">
               <div class="button-row">
                 <button id="previousImageButton" type="button">Previous</button>
                 <button id="nextImageButton" type="button">Next</button>
@@ -865,83 +1020,100 @@
                 <button id="needsReviewButton" type="button">Review</button>
               </div>
             </div>
-            <div class="queue-list" id="imageQueueList"></div>
+            <details class="sidebar-disclosure queue-disclosure" id="imageQueueDisclosure">
+              <summary>
+                <span>Image queue</span>
+                <span class="disclosure-meta" id="imageQueueSummary">0 images</span>
+              </summary>
+              <div class="disclosure-body">
+                <div class="queue-list" id="imageQueueList"></div>
+              </div>
+            </details>
           </section>
 
-          <section class="section">
-            <div class="section-title">Label</div>
-            <div class="label-grid" id="labelGrid"></div>
-          </section>
+          <div class="annotation-controls" id="annotationControls" hidden>
+            <div class="annotation-heading">Annotate</div>
 
-          <section class="section">
-            <div class="section-title">Mode</div>
-            <div class="mode-grid">
-              <button class="mode-button is-active" data-mode="draw" type="button">
-                Draw
-              </button>
-              <button class="mode-button" data-mode="refine" type="button">Refine</button>
-            </div>
-          </section>
+            <section class="section">
+              <div class="section-title">Label</div>
+              <div class="label-grid" id="labelGrid"></div>
+            </section>
 
-          <section class="section">
-            <div class="section-title">Current contour</div>
-            <div class="shape-mode-grid">
-              <button class="shape-mode-button" data-shape="open" type="button">Open line</button>
-              <button class="shape-mode-button is-active" data-shape="closed" type="button">
-                Closed region
-              </button>
-            </div>
-            <div class="button-row">
-              <button id="finishDraftButton" type="button">Finish Region</button>
-              <button id="cancelDraftButton" class="danger" type="button">Cancel</button>
-            </div>
-            <div class="shape-hint" id="shapeHint">face outline: closed region mode.</div>
-          </section>
+            <section class="section">
+              <div class="section-title">Mode</div>
+              <div class="mode-grid">
+                <button class="mode-button is-active" data-mode="draw" type="button">
+                  Draw
+                </button>
+                <button class="mode-button" data-mode="refine" type="button">Refine</button>
+              </div>
+            </section>
 
-          <section class="section">
-            <div class="section-title">Refine</div>
-            <label class="switch">
-              <span class="switch-label">Smooth edit</span>
-              <input id="softDragToggle" type="checkbox" checked />
-              <span class="switch-track" aria-hidden="true"></span>
-            </label>
-            <label class="switch" style="margin-top: 8px">
-              <span class="switch-label">Show points</span>
-              <input id="showPointsToggle" type="checkbox" />
-              <span class="switch-track" aria-hidden="true"></span>
-            </label>
-            <div class="range-row">
-              <strong>Influence</strong>
-              <span id="softRadiusValue">40 px</span>
-            </div>
-            <input
-              id="softRadiusInput"
-              class="range-input"
-              type="range"
-              min="4"
-              max="96"
-              step="4"
-              value="40"
-            />
-            <div class="button-row compact" style="margin-top: 10px">
-              <button id="densifyButton" type="button">Add curve points</button>
-            </div>
-          </section>
+            <section class="section" id="drawToolsSection">
+              <div class="section-title">Draw contour</div>
+              <div class="shape-mode-grid">
+                <button class="shape-mode-button" data-shape="open" type="button">
+                  Open line
+                </button>
+                <button class="shape-mode-button is-active" data-shape="closed" type="button">
+                  Closed region
+                </button>
+              </div>
+              <div class="button-row">
+                <button id="finishDraftButton" type="button">Finish Region</button>
+                <button id="cancelDraftButton" class="danger" type="button">Cancel</button>
+              </div>
+              <div class="shape-hint" id="shapeHint">face outline: closed region mode.</div>
+            </section>
+
+            <section class="section" id="refineToolsSection" hidden>
+              <div class="section-title">Refine contour</div>
+              <label class="switch">
+                <span class="switch-label">Smooth edit</span>
+                <input id="softDragToggle" type="checkbox" checked />
+                <span class="switch-track" aria-hidden="true"></span>
+              </label>
+              <label class="switch" style="margin-top: 8px">
+                <span class="switch-label">Show points</span>
+                <input id="showPointsToggle" type="checkbox" />
+                <span class="switch-track" aria-hidden="true"></span>
+              </label>
+              <div class="range-row">
+                <strong>Influence</strong>
+                <span id="softRadiusValue">40 px</span>
+              </div>
+              <input
+                id="softRadiusInput"
+                class="range-input"
+                type="range"
+                min="4"
+                max="96"
+                step="4"
+                value="40"
+              />
+              <div class="button-row compact" style="margin-top: 10px">
+                <button id="densifyButton" type="button">Add curve points</button>
+              </div>
+            </section>
+
+            <section class="section more-actions-section">
+              <details class="sidebar-disclosure" id="moreActionsDisclosure">
+                <summary>More actions</summary>
+                <div class="disclosure-body">
+                  <button id="initializeTemplateButton" type="button">Initialize features</button>
+                  <button id="clearButton" class="danger" type="button">Clear all contours</button>
+                </div>
+              </details>
+            </section>
+          </div>
         </div>
 
-        <section class="section actions-section">
+        <section class="section actions-section" id="actionsSection" hidden>
           <div class="section-title">Actions</div>
           <div class="button-row three">
             <button id="undoButton" type="button">Undo</button>
             <button id="redoButton" type="button">Redo</button>
             <button id="deleteButton" class="danger" type="button">Delete</button>
-          </div>
-          <div class="button-row compact" style="margin-top: 8px">
-            <button id="initializeTemplateButton" type="button">Initialize features</button>
-          </div>
-          <div class="button-row" style="margin-top: 8px">
-            <button id="clearButton" class="danger" type="button">Clear</button>
-            <button id="fitButton" type="button">Fit</button>
           </div>
         </section>
       </aside>
@@ -987,9 +1159,9 @@
           </div>
           <div class="empty-state" id="emptyState">
             <div class="empty-card">
-              <strong>Drop a face image</strong>
+              <strong>Open an image set</strong>
               <button id="emptyOpenButton" class="primary-button" type="button">
-                Open images
+                Open folder
               </button>
             </div>
           </div>
@@ -1047,7 +1219,7 @@
     </main>
 
     <script src="./vendor/fflate-0.8.3.js"></script>
-    <script type="module" src="./src/app.js?v=image-set-annotations-1"></script>
+    <script type="module" src="./src/app.js?v=sidebar-hierarchy-1"></script>
   </body>
 </html>
 

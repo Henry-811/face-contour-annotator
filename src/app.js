@@ -116,6 +116,17 @@ const elements = {
   openFolderButton: document.getElementById("openFolderButton"),
   openZipButton: document.getElementById("openZipButton"),
   emptyOpenButton: document.getElementById("emptyOpenButton"),
+  projectSummary: document.getElementById("projectSummary"),
+  sourceDisclosure: document.getElementById("sourceDisclosure"),
+  sourceDisclosureLabel: document.getElementById("sourceDisclosureLabel"),
+  imageWorkflowSection: document.getElementById("imageWorkflowSection"),
+  imageQueueDisclosure: document.getElementById("imageQueueDisclosure"),
+  imageQueueSummary: document.getElementById("imageQueueSummary"),
+  annotationControls: document.getElementById("annotationControls"),
+  drawToolsSection: document.getElementById("drawToolsSection"),
+  refineToolsSection: document.getElementById("refineToolsSection"),
+  moreActionsDisclosure: document.getElementById("moreActionsDisclosure"),
+  actionsSection: document.getElementById("actionsSection"),
   projectPosition: document.getElementById("projectPosition"),
   projectName: document.getElementById("projectName"),
   projectProgress: document.getElementById("projectProgress"),
@@ -156,13 +167,13 @@ const elements = {
   deleteButton: document.getElementById("deleteButton"),
   initializeTemplateButton: document.getElementById("initializeTemplateButton"),
   clearButton: document.getElementById("clearButton"),
-  fitButton: document.getElementById("fitButton"),
   finishDraftButton: document.getElementById("finishDraftButton"),
   cancelDraftButton: document.getElementById("cancelDraftButton"),
 };
 
 const ctx = elements.canvas.getContext("2d");
 let drawFrameId = null;
+let renderedSidebarSourceKey;
 
 function getCurrentImageSize() {
   return getImageSize(state.image);
@@ -390,7 +401,6 @@ function updateZoomControls() {
   elements.zoomOutButton.disabled = busy || !hasImage || state.imageZoom <= MIN_IMAGE_ZOOM;
   elements.zoomInButton.disabled = busy || !hasImage || state.imageZoom >= MAX_IMAGE_ZOOM;
   elements.zoomFitButton.disabled = busy || !hasImage || state.imageZoom === 1;
-  elements.fitButton.disabled = busy || !hasImage;
   elements.zoomValue.textContent = hasImage ? getImageZoomPercent() : "Fit";
 }
 
@@ -759,6 +769,30 @@ function hitLabel(point) {
   );
 }
 
+function syncSidebarHierarchy() {
+  const hasProject = Boolean(state.project);
+  const hasImage = Boolean(state.image);
+  const sourceKey =
+    state.project?.localWriteToken || (hasProject ? "image-set" : hasImage ? "legacy-image" : null);
+
+  if (sourceKey !== renderedSidebarSourceKey) {
+    elements.sourceDisclosure.open = !sourceKey;
+    elements.imageQueueDisclosure.open = false;
+    elements.moreActionsDisclosure.open = false;
+    renderedSidebarSourceKey = sourceKey;
+  }
+
+  elements.projectSummary.hidden = !hasProject;
+  elements.imageWorkflowSection.hidden = !hasProject;
+  elements.annotationControls.hidden = !hasImage;
+  elements.actionsSection.hidden = !hasImage;
+  elements.drawToolsSection.hidden = !hasImage || state.mode !== "draw";
+  elements.refineToolsSection.hidden = !hasImage || state.mode !== "refine";
+  elements.sourceDisclosureLabel.textContent = sourceKey
+    ? "Open or replace image set"
+    : "Open image set";
+}
+
 function syncModeControls() {
   document.querySelectorAll(".mode-button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.mode === state.mode);
@@ -799,7 +833,7 @@ function setMode(mode) {
     return;
   }
   state.mode = mode;
-  syncModeControls();
+  updateCommandState();
   scheduleDraftSave();
   setStatus(
     mode === "draw"
@@ -967,6 +1001,8 @@ function normalizeContoursForImage(contours, imageSize) {
 }
 
 function updateCommandState() {
+  syncSidebarHierarchy();
+  syncModeControls();
   const busy = state.projectOperationBusy;
   elements.undoButton.disabled = busy || state.undoStack.length === 0;
   elements.redoButton.disabled = busy || state.redoStack.length === 0;
@@ -1113,6 +1149,7 @@ function renderProjectPanel() {
   elements.projectPosition.textContent = images.length
     ? `${currentIndex + 1} / ${images.length}`
     : "0 / 0";
+  elements.imageQueueSummary.textContent = `${images.length} ${images.length === 1 ? "image" : "images"}`;
   elements.projectName.textContent = project?.name || "No image set";
   elements.projectProgress.textContent = `${progress.done} done, ${progress.in_progress} active`;
   renderProjectSaveState();
@@ -1256,7 +1293,6 @@ function renderTopbar() {
 
 function renderAll() {
   renderLabels();
-  syncModeControls();
   elements.softDragToggle.checked = state.softDrag;
   elements.showPointsToggle.checked = state.showPoints;
   elements.softRadiusInput.value = String(state.softRadius);
@@ -1927,6 +1963,7 @@ async function restoreDraft() {
       state.project = null;
       state.currentImageId = null;
       resetProjectSaveTracking();
+      renderAll();
       setStatus("Saved image set could not be restored. Its browser storage was kept.", true);
     } else {
       clearStoredDraft();
@@ -2491,7 +2528,7 @@ function wireEvents() {
   elements.openImageButton.addEventListener("click", () => elements.imageInput.click());
   elements.openFolderButton.addEventListener("click", () => elements.folderInput.click());
   elements.openZipButton.addEventListener("click", () => elements.zipInput.click());
-  elements.emptyOpenButton.addEventListener("click", () => elements.imageInput.click());
+  elements.emptyOpenButton.addEventListener("click", () => elements.folderInput.click());
   elements.imageInput.addEventListener("change", (event) => {
     openProjectFromFiles(event.target.files, "files");
     event.target.value = "";
@@ -2538,9 +2575,6 @@ function wireEvents() {
   elements.zoomOutButton.addEventListener("click", () => zoomImage(-1));
   elements.zoomInButton.addEventListener("click", () => zoomImage(1));
   elements.zoomFitButton.addEventListener("click", resetImageZoom);
-  elements.fitButton.addEventListener("click", () => {
-    resetImageZoom();
-  });
 
   elements.softDragToggle.addEventListener("change", (event) => {
     state.softDrag = event.target.checked;

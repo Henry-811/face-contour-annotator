@@ -407,6 +407,46 @@ try {
     "the application shell",
   );
 
+  const emptySidebarState = await client.evaluate(`(() => ({
+    sourceOpen: document.querySelector("#sourceDisclosure").open,
+    projectSummaryHidden: document.querySelector("#projectSummary").hidden,
+    imageWorkflowHidden: document.querySelector("#imageWorkflowSection").hidden,
+    annotationHidden: document.querySelector("#annotationControls").hidden,
+    actionsHidden: document.querySelector("#actionsSection").hidden,
+    projectSummaryVisible: document.querySelector("#projectSummary").offsetParent !== null,
+    imageWorkflowVisible: document.querySelector("#imageWorkflowSection").offsetParent !== null,
+    annotationVisible: document.querySelector("#annotationControls").offsetParent !== null,
+    actionsVisible: document.querySelector("#actionsSection").offsetParent !== null,
+    emptyOpenLabel: document.querySelector("#emptyOpenButton").textContent.trim(),
+  }))()`);
+  assert.deepEqual(emptySidebarState, {
+    sourceOpen: true,
+    projectSummaryHidden: true,
+    imageWorkflowHidden: true,
+    annotationHidden: true,
+    actionsHidden: true,
+    projectSummaryVisible: false,
+    imageWorkflowVisible: false,
+    annotationVisible: false,
+    actionsVisible: false,
+    emptyOpenLabel: "Open folder",
+  });
+  const emptyOpenRouting = await client.evaluate(`(() => {
+    const folderInput = document.querySelector("#folderInput");
+    const imageInput = document.querySelector("#imageInput");
+    const originalFolderClick = folderInput.click;
+    const originalImageClick = imageInput.click;
+    let folderClicks = 0;
+    let imageClicks = 0;
+    folderInput.click = () => { folderClicks += 1; };
+    imageInput.click = () => { imageClicks += 1; };
+    document.querySelector("#emptyOpenButton").click();
+    folderInput.click = originalFolderClick;
+    imageInput.click = originalImageClick;
+    return { folderClicks, imageClicks };
+  })()`);
+  assert.deepEqual(emptyOpenRouting, { folderClicks: 1, imageClicks: 0 });
+
   await client.setFiles("#zipInput", [boundedWorkerZip]);
   await waitFor(
     () =>
@@ -461,6 +501,199 @@ try {
   assert.equal(await client.evaluate("window.__zipWorkerCount > 0"), true);
   assert.equal(await client.evaluate("window.__zipWorkerPeak <= 3"), true);
   assert.equal(await client.evaluate("window.__zipWorkerActive"), 0);
+
+  const workingSidebarState = await client.evaluate(`(() => ({
+    sourceOpen: document.querySelector("#sourceDisclosure").open,
+    sourceLabel: document.querySelector("#sourceDisclosureLabel").textContent.trim(),
+    projectSummaryHidden: document.querySelector("#projectSummary").hidden,
+    imageWorkflowHidden: document.querySelector("#imageWorkflowSection").hidden,
+    annotationHidden: document.querySelector("#annotationControls").hidden,
+    actionsHidden: document.querySelector("#actionsSection").hidden,
+    queueOpen: document.querySelector("#imageQueueDisclosure").open,
+    queueSummary: document.querySelector("#imageQueueSummary").textContent.trim(),
+    queueItems: document.querySelectorAll("#imageQueueList .queue-item").length,
+    drawHidden: document.querySelector("#drawToolsSection").hidden,
+    refineHidden: document.querySelector("#refineToolsSection").hidden,
+    projectSummaryVisible: document.querySelector("#projectSummary").offsetParent !== null,
+    imageWorkflowVisible: document.querySelector("#imageWorkflowSection").offsetParent !== null,
+    annotationVisible: document.querySelector("#annotationControls").offsetParent !== null,
+    actionsVisible: document.querySelector("#actionsSection").offsetParent !== null,
+    sourceBodyVisible: document.querySelector("#sourceDisclosure .disclosure-body").offsetParent !== null,
+    queueBodyVisible: document.querySelector("#imageQueueDisclosure .disclosure-body").offsetParent !== null,
+    moreActionsBodyVisible: document.querySelector("#moreActionsDisclosure .disclosure-body").offsetParent !== null,
+    actionIds: Array.from(document.querySelectorAll("#actionsSection button"), (button) => button.id),
+    moreActionIds: Array.from(
+      document.querySelectorAll("#moreActionsDisclosure button"),
+      (button) => button.id,
+    ),
+    sideFitCount: document.querySelectorAll("#fitButton").length,
+    workspaceFitCount: document.querySelectorAll("#zoomFitButton").length,
+  }))()`);
+  assert.deepEqual(workingSidebarState, {
+    sourceOpen: false,
+    sourceLabel: "Open or replace image set",
+    projectSummaryHidden: false,
+    imageWorkflowHidden: false,
+    annotationHidden: false,
+    actionsHidden: false,
+    queueOpen: false,
+    queueSummary: "3 images",
+    queueItems: 3,
+    drawHidden: false,
+    refineHidden: true,
+    projectSummaryVisible: true,
+    imageWorkflowVisible: true,
+    annotationVisible: true,
+    actionsVisible: true,
+    sourceBodyVisible: false,
+    queueBodyVisible: false,
+    moreActionsBodyVisible: false,
+    actionIds: ["undoButton", "redoButton", "deleteButton"],
+    moreActionIds: ["initializeTemplateButton", "clearButton"],
+    sideFitCount: 0,
+    workspaceFitCount: 1,
+  });
+
+  const disclosureInteraction = await client.evaluate(`(() => {
+    const sourceDisclosure = document.querySelector("#sourceDisclosure");
+    const queueDisclosure = document.querySelector("#imageQueueDisclosure");
+    sourceDisclosure.querySelector("summary").click();
+    const sourceOpened = sourceDisclosure.open;
+    const sourceButtonsVisible = ["openFolderButton", "openImageButton", "openZipButton"].every(
+      (id) => document.querySelector("#" + id).offsetParent !== null,
+    );
+    sourceDisclosure.querySelector("summary").click();
+    queueDisclosure.querySelector("summary").click();
+    const queueOpened = queueDisclosure.open;
+    queueDisclosure.querySelector("summary").click();
+    return {
+      sourceOpened,
+      sourceButtonsVisible,
+      sourceClosed: !sourceDisclosure.open,
+      queueOpened,
+      queueClosed: !queueDisclosure.open,
+    };
+  })()`);
+  assert.deepEqual(disclosureInteraction, {
+    sourceOpened: true,
+    sourceButtonsVisible: true,
+    sourceClosed: true,
+    queueOpened: true,
+    queueClosed: true,
+  });
+
+  await client.evaluate(
+    'document.querySelector(".mode-button[data-mode=refine]").click()',
+  );
+  await waitFor(
+    () =>
+      client.evaluate(`(() =>
+        document.querySelector("#drawToolsSection").hidden &&
+        !document.querySelector("#refineToolsSection").hidden &&
+        document.querySelector(".mode-button[data-mode=refine]").classList.contains("is-active")
+      )()`),
+    "the contextual Refine controls",
+  );
+  await client.evaluate('document.querySelector(".mode-button[data-mode=draw]").click()');
+  await waitFor(
+    () =>
+      client.evaluate(`(() =>
+        !document.querySelector("#drawToolsSection").hidden &&
+        document.querySelector("#refineToolsSection").hidden &&
+        document.querySelector(".mode-button[data-mode=draw]").classList.contains("is-active") &&
+        document.querySelector("#projectSaveState").dataset.state === "saved"
+      )()`),
+    "the restored Draw controls and saved preference",
+  );
+
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await waitFor(
+    () => client.evaluate("window.innerWidth === 1280 && window.innerHeight === 720"),
+    "the desktop sidebar viewport",
+  );
+  const desktopSidebarLayout = await client.evaluate(`(() => {
+    const appRect = document.querySelector(".app").getBoundingClientRect();
+    const sidebarRect = document.querySelector(".sidebar").getBoundingClientRect();
+    const sidebarScroll = document.querySelector(".sidebar-scroll");
+    const actionsRect = document.querySelector("#actionsSection").getBoundingClientRect();
+    const projectName = document.querySelector("#projectName");
+    const originalProjectName = projectName.textContent;
+    projectName.textContent = "folder-" + "x".repeat(120);
+    const projectSummaryRect = document.querySelector("#projectSummary").getBoundingClientRect();
+    const projectProgressRect = document.querySelector("#projectProgress").getBoundingClientRect();
+    const longNameEvidence = {
+      sidebarHasNoHorizontalOverflow:
+        sidebarScroll.scrollWidth <= sidebarScroll.clientWidth + 1,
+      projectSummaryFits: projectSummaryRect.right <= sidebarRect.right + 1,
+      longNameTruncated: projectName.scrollWidth > projectName.clientWidth,
+      projectProgressVisible:
+        projectProgressRect.left >= sidebarRect.left &&
+        projectProgressRect.right <= sidebarRect.right + 1,
+    };
+    projectName.textContent = originalProjectName;
+    return {
+      appFits: appRect.bottom <= window.innerHeight + 1,
+      sidebarFits: sidebarRect.bottom <= window.innerHeight + 1,
+      actionsVisible:
+        actionsRect.top >= 0 && actionsRect.bottom <= window.innerHeight + 1,
+      annotationsScroll: sidebarScroll.scrollHeight > sidebarScroll.clientHeight,
+      ...longNameEvidence,
+    };
+  })()`);
+  assert.deepEqual(desktopSidebarLayout, {
+    appFits: true,
+    sidebarFits: true,
+    actionsVisible: true,
+    annotationsScroll: true,
+    sidebarHasNoHorizontalOverflow: true,
+    projectSummaryFits: true,
+    longNameTruncated: true,
+    projectProgressVisible: true,
+  });
+
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 680,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await waitFor(
+    () => client.evaluate("window.innerWidth === 680"),
+    "the narrow sidebar viewport",
+  );
+  const narrowLayout = await client.evaluate(`(() => {
+    const appStyle = getComputedStyle(document.querySelector(".app"));
+    const labelGrid = document.querySelector("#labelGrid");
+    const labelStyle = getComputedStyle(labelGrid);
+    return {
+      appDisplay: appStyle.display,
+      labelOverflowX: labelStyle.overflowX,
+      labelsScroll: labelGrid.scrollWidth > labelGrid.clientWidth,
+      pageFits: document.documentElement.scrollWidth <= window.innerWidth + 1,
+    };
+  })()`);
+  assert.deepEqual(narrowLayout, {
+    appDisplay: "block",
+    labelOverflowX: "auto",
+    labelsScroll: true,
+    pageFits: true,
+  });
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await waitFor(
+    () => client.evaluate('window.innerWidth === 1280 && getComputedStyle(document.querySelector(".app")).display === "grid"'),
+    "the restored desktop layout",
+  );
+  await client.send("Emulation.clearDeviceMetricsOverride");
 
   const synchronousWriteFailure = await client.evaluate(`(async () => {
     const storage = await import("/src/storage.js?v=image-set-annotations-1");
