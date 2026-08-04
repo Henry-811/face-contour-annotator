@@ -79,6 +79,11 @@
         transform: none;
       }
 
+      :where(button, input, select, textarea, summary, [tabindex]):focus-visible {
+        outline: 3px solid rgba(8, 126, 107, 0.34);
+        outline-offset: 2px;
+      }
+
       .app {
         display: grid;
         grid-template-columns: 292px minmax(360px, 1fr) 352px;
@@ -325,6 +330,20 @@
         align-items: center;
         justify-content: space-between;
         gap: 10px;
+      }
+
+      .save-state {
+        min-height: 18px;
+        color: var(--muted);
+      }
+
+      .save-state[data-state="saved"] {
+        color: var(--accent);
+      }
+
+      .save-state[data-state="failed"] {
+        color: var(--hot);
+        font-weight: 700;
       }
 
       .queue-list {
@@ -634,9 +653,30 @@
         border-color: var(--hot);
       }
 
-      .export-panel {
+      .transfer-panel {
         padding: 14px 18px 18px;
         border-top: 1px solid var(--line);
+      }
+
+      .transfer-group + .transfer-group {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }
+
+      .transfer-title {
+        margin: 0;
+        color: #36413c;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .transfer-help {
+        margin: 5px 0 10px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.42;
       }
 
       .export-debug {
@@ -679,6 +719,50 @@
         padding: 10px;
       }
 
+      .import-report {
+        margin-top: 12px;
+      }
+
+      .import-report > summary {
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .match-list {
+        max-height: 220px;
+        margin-top: 8px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fffef8;
+      }
+
+      .match-list ul {
+        display: grid;
+        gap: 0;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .match-list li {
+        display: grid;
+        gap: 3px;
+        padding: 10px 12px;
+        overflow-wrap: anywhere;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .match-list li + li {
+        border-top: 1px solid var(--line);
+      }
+
+      .match-list strong {
+        color: var(--hot);
+      }
+
       .empty-list {
         display: grid;
         min-height: 100%;
@@ -711,7 +795,7 @@
         }
       }
 
-      @media (max-width: 720px) and (pointer: coarse) {
+      @media (max-width: 720px) {
         .app {
           display: block;
         }
@@ -719,6 +803,7 @@
         .workspace {
           height: 68vh;
         }
+
       }
     </style>
   </head>
@@ -737,20 +822,38 @@
                 Open images
               </button>
               <button id="openFolderButton" type="button">Open folder</button>
+              <button id="openZipButton" type="button">Open ZIP</button>
             </div>
-            <input id="imageInput" type="file" accept="image/*" multiple hidden />
-            <input id="folderInput" type="file" accept="image/*" multiple webkitdirectory hidden />
+            <input
+              id="imageInput"
+              type="file"
+              accept=".avif,.bmp,.gif,.jpeg,.jpg,.png,.webp"
+              multiple
+              hidden
+            />
+            <input
+              id="folderInput"
+              type="file"
+              accept=".avif,.bmp,.gif,.jpeg,.jpg,.png,.webp"
+              multiple
+              webkitdirectory
+              hidden
+            />
+            <input id="zipInput" type="file" accept="application/zip,.zip" hidden />
           </section>
 
           <section class="section">
             <div class="section-title">
-              Project
+              Images
               <span class="pill" id="projectPosition">0 / 0</span>
             </div>
             <div class="project-summary">
               <div class="progress-line">
-                <span id="projectName">No project</span>
+                <span id="projectName">No image set</span>
                 <span id="projectProgress">0 done</span>
+              </div>
+              <div class="save-state" id="projectSaveState" data-state="idle">
+                No local image set
               </div>
               <div class="button-row">
                 <button id="previousImageButton" type="button">Previous</button>
@@ -892,7 +995,7 @@
           </div>
         </section>
 
-        <footer class="statusbar">
+        <footer class="statusbar" role="status" aria-live="polite">
           <span id="statusText">Ready.</span>
         </footer>
       </section>
@@ -905,21 +1008,46 @@
 
         <section class="contour-list" id="contourList"></section>
 
-        <section class="export-panel">
-          <div class="button-row">
-            <button id="downloadButton" type="button">Export Project JSON</button>
-            <button id="importButton" type="button">Import JSON</button>
+        <section class="transfer-panel" aria-label="Annotation file">
+          <div class="transfer-group">
+            <h3 class="transfer-title">Annotation file</h3>
+            <p class="transfer-help" id="annotationImportHelp">
+              Open the source folder or ZIP first. One JSON contains its paths, progress, and contours.
+            </p>
+            <div class="button-row">
+              <button id="exportAnnotationsButton" type="button">Export JSON</button>
+              <button
+                id="importAnnotationsButton"
+                type="button"
+                aria-describedby="annotationImportHelp"
+              >
+                Import JSON
+              </button>
+            </div>
           </div>
-          <input id="jsonInput" type="file" accept="application/json,.json" hidden />
+
+          <input
+            id="annotationFileInput"
+            type="file"
+            accept="application/json,.face-contour-annotations.json,.json"
+            hidden
+          />
+          <details id="annotationImportReport" class="import-report" hidden>
+            <summary id="annotationImportSummary">Import report</summary>
+            <div class="match-list">
+              <ul id="annotationImportIssues"></ul>
+            </div>
+          </details>
           <details class="export-debug">
-            <summary>Preview JSON</summary>
+            <summary>Preview annotation JSON</summary>
             <textarea class="json-output" id="jsonOutput" readonly spellcheck="false"></textarea>
           </details>
         </section>
       </aside>
     </main>
 
-    <script type="module" src="./src/app.js"></script>
+    <script src="./vendor/fflate-0.8.3.js"></script>
+    <script type="module" src="./src/app.js?v=image-set-annotations-1"></script>
   </body>
 </html>
 

@@ -1,5 +1,4 @@
 import { finiteNumber, normalizePointToImage } from "./geometry.js";
-import { getProgress, PROJECT_JSON_VERSION } from "./project.js";
 
 function getShapeType(closed) {
   return closed ? "polygon" : "linestrip";
@@ -49,47 +48,6 @@ function serializeContour(contour, labels) {
       x: Math.round(point.x),
       y: Math.round(point.y),
     })),
-  };
-}
-
-export function buildAnnotationExport({ image, fileName, labels, contours }) {
-  return {
-    version: "face-contour-annotator-v1",
-    taskSchema: buildTaskSchema(labels),
-    image: image
-      ? {
-          name: fileName,
-          width: image.naturalWidth,
-          height: image.naturalHeight,
-        }
-      : null,
-    labels: labels.map((label) => ({
-      ...getLabelShapeSchema(label),
-      defaultClosed: label.defaultClosed,
-    })),
-    contours: contours.map((contour) => serializeContour(contour, labels)),
-  };
-}
-
-export function buildProjectExport({ project, labels }) {
-  if (!project || !Array.isArray(project.images)) {
-    throw new Error("A project is required for project export.");
-  }
-  return {
-    version: PROJECT_JSON_VERSION,
-    taskSchema: buildTaskSchema(labels),
-    source: project.source || null,
-    images: project.images.map((image) => ({
-      id: image.id,
-      name: image.name,
-      path: image.path || image.name,
-      width: image.width,
-      height: image.height,
-      status: image.status,
-      contours: serializeContours(image.contours || [], labels),
-    })),
-    progress: getProgress(project.images),
-    currentImageId: project.currentImageId || project.images[0]?.id || null,
   };
 }
 

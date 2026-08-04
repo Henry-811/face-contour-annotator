@@ -7,9 +7,9 @@ import {
 } from "../src/geometry.js";
 import { LABELS, MIN_CLOSED_POINTS, MIN_OPEN_POINTS } from "../src/config.js";
 import {
-  buildAnnotationExport,
-  buildProjectExport,
+  buildTaskSchema,
   normalizeImportedContours,
+  serializeContours,
   validateContoursForTaskSchema,
 } from "../src/exporter.js";
 import {
@@ -28,6 +28,7 @@ import {
   getFitCanvasScale,
   hitContourLabel,
 } from "../src/renderer.js";
+import { planImportStorage } from "../src/storage.js";
 import { buildDefaultFeatureContours } from "../src/templates.js";
 import {
   buildBasecolorUrlForFbxName,
@@ -254,11 +255,9 @@ function testImportRejectsInvalidPoints() {
 }
 
 function testExportIncludesTaskSchema() {
-  const exportData = buildAnnotationExport({
-    image: { naturalWidth: 512, naturalHeight: 512 },
-    fileName: "face.jpg",
-    labels: LABELS,
-    contours: [
+  const taskSchema = buildTaskSchema(LABELS);
+  const contours = serializeContours(
+    [
       {
         id: "nose_line",
         label: "nose",
@@ -269,71 +268,22 @@ function testExportIncludesTaskSchema() {
         ],
       },
     ],
-  });
+    LABELS,
+  );
 
-  const noseSchema = exportData.taskSchema.labels.find((label) => label.id === "nose");
-  const mouthSeamSchema = exportData.taskSchema.labels.find(
+  const noseSchema = taskSchema.labels.find((label) => label.id === "nose");
+  const mouthSeamSchema = taskSchema.labels.find(
     (label) => label.id === "mouth_seam",
   );
-  const eyeSchema = exportData.taskSchema.labels.find((label) => label.id === "left_eye");
+  const eyeSchema = taskSchema.labels.find((label) => label.id === "left_eye");
 
-  assert.equal(exportData.taskSchema.coordinateSystem, "image_pixels");
+  assert.equal(taskSchema.coordinateSystem, "image_pixels");
   assert.equal(noseSchema.defaultShapeType, "linestrip");
   assert.deepEqual(noseSchema.allowedShapeTypes, ["linestrip"]);
   assert.equal(mouthSeamSchema.defaultShapeType, "linestrip");
   assert.deepEqual(mouthSeamSchema.allowedShapeTypes, ["linestrip"]);
   assert.deepEqual(eyeSchema.allowedShapeTypes, ["polygon"]);
-  assert.equal(exportData.contours[0].shape_type, "linestrip");
-}
-
-function testProjectExportIncludesAllImagesAndProgress() {
-  const project = createAnnotationProject({
-    images: [
-      createProjectImage({
-        id: "img_001",
-        name: "face001.jpg",
-        path: "batch_a/face001.jpg",
-        width: 512,
-        height: 512,
-        dataUrl: "data:image/jpeg;base64,abc",
-        status: "done",
-        contours: [
-          {
-            id: "left_eye",
-            label: "left_eye",
-            closed: true,
-            points: [
-              { x: 10, y: 10 },
-              { x: 20, y: 10 },
-              { x: 15, y: 18 },
-            ],
-          },
-        ],
-      }),
-      createProjectImage({
-        id: "img_002",
-        name: "face002.jpg",
-        path: "batch_a/face002.jpg",
-        width: 512,
-        height: 512,
-        dataUrl: "data:image/jpeg;base64,def",
-        status: "skipped",
-        contours: [],
-      }),
-    ],
-    taskSchema: {},
-  });
-
-  const exportData = buildProjectExport({ project, labels: LABELS });
-
-  assert.equal(exportData.version, "face-contour-project-v1");
-  assert.equal(exportData.images.length, 2);
-  assert.equal(exportData.images[0].path, "batch_a/face001.jpg");
-  assert.equal("dataUrl" in exportData.images[0], false);
-  assert.equal(exportData.progress.total, 2);
-  assert.equal(exportData.progress.done, 1);
-  assert.equal(exportData.progress.skipped, 1);
-  assert.equal(exportData.images[0].contours[0].shape_type, "polygon");
+  assert.equal(contours[0].shape_type, "linestrip");
 }
 
 function testProjectProgressCountsStatuses() {
@@ -449,6 +399,58 @@ function testHydrateProjectImagesMergesImageRecords() {
   assert.equal(hydrated.images[0].status, "done");
   assert.equal(hydrated.images[0].contours[0].label, "mouth");
   assert.equal(hydrated.images[0].dataUrl, undefined);
+}
+
+function testHydrateProjectImagesRejectsMissingStoredRecord() {
+  const project = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_missing",
+        name: "missing.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+      }),
+    ],
+    taskSchema: {},
+  });
+  const metadata = toProjectMetadata(project);
+
+  assert.throws(
+    () => hydrateProjectImages(metadata, []),
+    /Stored annotation record is missing for missing\.jpg/,
+  );
+}
+
+function testHydrateProjectImagesKeepsLegacyEmbeddedContours() {
+  const legacyProject = createAnnotationProject({
+    images: [
+      createProjectImage({
+        id: "img_legacy",
+        name: "legacy.jpg",
+        width: 512,
+        height: 512,
+        dataUrl: "data:image/jpeg;base64,abc",
+        contours: [
+          {
+            id: "legacy-mouth",
+            label: "mouth",
+            closed: true,
+            points: [
+              { x: 10, y: 10 },
+              { x: 20, y: 10 },
+              { x: 15, y: 18 },
+            ],
+          },
+        ],
+      }),
+    ],
+    taskSchema: {},
+  });
+
+  const hydrated = hydrateProjectImages(legacyProject, []);
+
+  assert.equal(hydrated.images[0].contours[0].id, "legacy-mouth");
 }
 
 function testProjectAdjacentImageNavigation() {
@@ -765,6 +767,61 @@ function testFbxViewerPoseKeepsCombinedAnglesInBudget() {
   assert.equal(pose.cameraRoll, -3);
 }
 
+function testStoragePlanAcceptsBatchThatFitsQuota() {
+  const plan = planImportStorage({
+    fileSizes: [1000000, 1000000],
+    usage: 0,
+    quota: 100000000,
+  });
+
+  assert.equal(plan.known, true);
+  assert.equal(plan.fits, true);
+  assert.equal(plan.fittableCount, 2);
+}
+
+function testStoragePlanCountsBase64Inflation() {
+  // 3 MB of source files occupy 4 MB once stored as base64 data URLs.
+  const plan = planImportStorage({ fileSizes: [3000000], usage: 0, quota: 100000000 });
+
+  assert.equal(plan.requiredBytes, 4000000);
+}
+
+function testStoragePlanRejectsOversizedBatchWithWorkableCount() {
+  // 10 MB quota leaves 9 MB after headroom; each file costs 4 MB stored, so 2 fit.
+  const plan = planImportStorage({
+    fileSizes: [3000000, 3000000, 3000000, 3000000],
+    usage: 0,
+    quota: 10000000,
+  });
+
+  assert.equal(plan.fits, false);
+  assert.equal(plan.fittableCount, 2);
+}
+
+function testStoragePlanSubtractsExistingUsage() {
+  const plan = planImportStorage({ fileSizes: [3000000], usage: 8000000, quota: 10000000 });
+
+  assert.equal(plan.availableBytes, 1000000);
+  assert.equal(plan.fits, false);
+  assert.equal(plan.fittableCount, 0);
+}
+
+function testStoragePlanAllowsImportWhenQuotaIsUnknown() {
+  const plan = planImportStorage({ fileSizes: [3000000], usage: 0, quota: 0 });
+
+  assert.equal(plan.known, false);
+  assert.equal(plan.fits, true);
+  assert.equal(plan.fittableCount, 1);
+}
+
+function testStoragePlanHandlesEmptyFileList() {
+  const plan = planImportStorage({ fileSizes: [], usage: 0, quota: 10000000 });
+
+  assert.equal(plan.fits, true);
+  assert.equal(plan.requiredBytes, 0);
+  assert.equal(plan.fittableCount, 0);
+}
+
 testSoftMoveClampsLargeDrag();
 testHitTestingKeepsLineAndFillDistinct();
 testFilledHitPrefersSmallestContainingContour();
@@ -772,11 +829,12 @@ testHitTestingOpenEndpointWithoutShowingPoints();
 testOpenEndpointSoftMoveSpreadsToNeighborPoints();
 testImportRejectsInvalidPoints();
 testExportIncludesTaskSchema();
-testProjectExportIncludesAllImagesAndProgress();
 testProjectProgressCountsStatuses();
 testProjectMetadataOmitsImagePayload();
 testProjectImageRecordOmitsDataUrl();
 testHydrateProjectImagesMergesImageRecords();
+testHydrateProjectImagesRejectsMissingStoredRecord();
+testHydrateProjectImagesKeepsLegacyEmbeddedContours();
 testProjectAdjacentImageNavigation();
 testFolderImportPreservesRelativePath();
 testDoneValidationRejectsInvalidContours();
@@ -794,5 +852,11 @@ testApplyCanvasScaleAllowsZoomBeyondWorkspace();
 testFbxViewerExtractsNumericTextureId();
 testFbxViewerBuildsBasecolorUrl();
 testFbxViewerPoseKeepsCombinedAnglesInBudget();
+testStoragePlanAcceptsBatchThatFitsQuota();
+testStoragePlanCountsBase64Inflation();
+testStoragePlanRejectsOversizedBatchWithWorkableCount();
+testStoragePlanSubtractsExistingUsage();
+testStoragePlanAllowsImportWhenQuotaIsUnknown();
+testStoragePlanHandlesEmptyFileList();
 
 console.log("logic tests passed");

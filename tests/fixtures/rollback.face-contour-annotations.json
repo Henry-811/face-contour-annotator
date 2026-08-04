@@ -1,0 +1,32 @@
+{
+  "kind": "face-contour-annotations",
+  "schemaVersion": 1,
+  "exportedAt": "2026-08-03T00:00:00.000Z",
+  "imageSet": {
+    "name": "Rollback browser fixture",
+    "currentImagePath": "faces/2-face-lena.jpg"
+  },
+  "images": [
+    {
+      "relativePath": "faces/2-face-lena.jpg",
+      "name": "2-face-lena.jpg",
+      "width": 512,
+      "height": 512,
+      "status": "done",
+      "contours": [
+        {
+          "id": "rollback-left-eye",
+          "label": "left_eye",
+          "closed": true,
+          "shape_type": "polygon",
+          "points": [
+            { "x": 190, "y": 190 },
+            { "x": 230, "y": 190 },
+            { "x": 210, "y": 220 }
+          ]
+        }
+      ],
+      "updatedAt": "2026-08-03T00:00:00.000Z"
+    }
+  ]
+}

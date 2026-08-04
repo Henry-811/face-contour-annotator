@@ -12,12 +12,16 @@ export function isImageStatus(status) {
   return IMAGE_STATUSES.includes(status);
 }
 
-export function createProjectId(now = Date.now()) {
-  return `project_${now.toString(36)}`;
-}
-
 export function createImageId(index, now = Date.now()) {
   return `img_${now.toString(36)}_${String(index + 1).padStart(4, "0")}`;
+}
+
+export function createLocalWriteToken() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const randomPart = Math.random().toString(36).slice(2);
+  return `local-${Date.now().toString(36)}-${randomPart}`;
 }
 
 export function getFilePath(file) {
@@ -71,11 +75,14 @@ export function hydrateProjectImages(project, imageRecords = []) {
   return {
     ...project,
     images: (project.images || []).map((image) => {
-      const record = recordById.get(image.id) || {};
+      const record = recordById.get(image.id);
+      if (!record && !Array.isArray(image.contours)) {
+        throw new Error(`Stored annotation record is missing for ${image.path || image.name || image.id}.`);
+      }
       return {
         ...image,
-        ...record,
-        dataUrl: image.dataUrl || record.dataUrl,
+        ...(record || {}),
+        dataUrl: image.dataUrl || record?.dataUrl,
       };
     }),
   };
@@ -105,25 +112,36 @@ export function createProjectImage({
   };
 }
 
+export function releaseProjectImageAssets(project) {
+  if (!project?.images) {
+    return project;
+  }
+  return {
+    ...project,
+    images: project.images.map(({ dataUrl: _dataUrl, ...image }) => image),
+  };
+}
+
 export function createAnnotationProject({
-  id = createProjectId(),
   name = "Face contour project",
   images,
   taskSchema,
   sourceType = "files",
   preferences = {},
+  localWriteToken = createLocalWriteToken(),
 }) {
   if (!Array.isArray(images) || images.length === 0) {
     throw new Error("A project needs at least one image.");
   }
   return {
-    id,
     name,
     version: PROJECT_JSON_VERSION,
     source: {
       type: sourceType,
       importedAt: new Date().toISOString(),
     },
+    // Local compare-and-swap lease. This is never part of the portable annotation file.
+    localWriteToken,
     taskSchema,
     images,
     currentImageId: images[0].id,

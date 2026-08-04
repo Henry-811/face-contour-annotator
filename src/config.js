@@ -117,3 +117,16 @@ export const PROJECT_IMAGE_ASSET_STORE_NAME = "project-image-assets";
 export const CURRENT_PROJECT_KEY = "current-project";
 export const MAX_LEGACY_DRAFT_BYTES = 1500000;
 export const DRAFT_SAVE_DELAY_MS = 200;
+export const MAX_ANNOTATION_FILE_BYTES = 20 * 1024 * 1024;
+export const MAX_IMAGE_SET_ENTRIES = 10000;
+export const MAX_RELATIVE_PATH_LENGTH = 1024;
+export const MAX_ZIP_FILE_BYTES = 256 * 1024 * 1024;
+export const MAX_ZIP_ENTRY_BYTES = 50 * 1024 * 1024;
+export const MAX_ZIP_EXPANDED_BYTES = 512 * 1024 * 1024;
+export const MAX_ZIP_COMPRESSION_RATIO = 200;
+export const MAX_ZIP_INFLATE_CONCURRENCY = 3;
+export const ZIP_INFLATE_INPUT_CHUNK_BYTES = 16 * 1024;
+// Images are stored as base64 data URLs, which turn every 3 bytes into 4 characters.
+export const DATA_URL_SIZE_RATIO = 4 / 3;
+// Reported quota is an estimate and project metadata needs room too, so keep a margin.
+export const STORAGE_HEADROOM_RATIO = 0.9;

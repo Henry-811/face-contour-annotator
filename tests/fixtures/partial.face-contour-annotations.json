@@ -1,0 +1,38 @@
+{
+  "kind": "face-contour-annotations",
+  "schemaVersion": 1,
+  "exportedAt": "2026-08-03T00:00:00.000Z",
+  "imageSet": {
+    "name": "Partial browser fixture",
+    "currentImagePath": "faces/2-face-lena.jpg"
+  },
+  "images": [
+    {
+      "relativePath": "faces/2-face-lena.jpg",
+      "name": "2-face-lena.jpg",
+      "width": 512,
+      "height": 512,
+      "status": "skipped",
+      "contours": [],
+      "updatedAt": "2026-08-03T00:00:00.000Z"
+    },
+    {
+      "relativePath": "faces/10-run-asset-type-samples.png",
+      "name": "10-run-asset-type-samples.png",
+      "width": 100,
+      "height": 100,
+      "status": "skipped",
+      "contours": [],
+      "updatedAt": "2026-08-03T00:00:00.000Z"
+    },
+    {
+      "relativePath": "faces/missing.jpg",
+      "name": "missing.jpg",
+      "width": 512,
+      "height": 512,
+      "status": "skipped",
+      "contours": [],
+      "updatedAt": "2026-08-03T00:00:00.000Z"
+    }
+  ]
+}
