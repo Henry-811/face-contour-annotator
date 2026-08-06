@@ -14,6 +14,7 @@ import {
 } from "../src/exporter.js";
 import {
   createAnnotationProject,
+  createImageId,
   createProjectImage,
   getFilePath,
   getAdjacentImageId,
@@ -303,6 +304,21 @@ function testProjectProgressCountsStatuses() {
   assert.equal(progress.unlabeled, 1);
 }
 
+function testProjectScopedImageIdsDoNotCollide() {
+  assert.equal(
+    createImageId({ localProjectKey: "project-a", index: 0 }),
+    "project-image:project-a:0001",
+  );
+  assert.notEqual(
+    createImageId({ localProjectKey: "project-a", index: 0 }),
+    createImageId({ localProjectKey: "project-b", index: 0 }),
+  );
+  assert.throws(
+    () => createImageId({ localProjectKey: "", index: 0 }),
+    /local project key/i,
+  );
+}
+
 function testProjectMetadataOmitsImagePayload() {
   const project = createAnnotationProject({
     images: [
@@ -331,6 +347,7 @@ function testProjectMetadataOmitsImagePayload() {
 
   const metadata = toProjectMetadata(project);
 
+  assert.equal(metadata.localProjectKey, project.localProjectKey);
   assert.equal("dataUrl" in metadata.images[0], false);
   assert.equal("contours" in metadata.images[0], false);
   assert.equal(metadata.images[0].status, "unlabeled");
@@ -830,6 +847,7 @@ testOpenEndpointSoftMoveSpreadsToNeighborPoints();
 testImportRejectsInvalidPoints();
 testExportIncludesTaskSchema();
 testProjectProgressCountsStatuses();
+testProjectScopedImageIdsDoNotCollide();
 testProjectMetadataOmitsImagePayload();
 testProjectImageRecordOmitsDataUrl();
 testHydrateProjectImagesMergesImageRecords();

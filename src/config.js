@@ -108,13 +108,15 @@ export const MIN_IMAGE_ZOOM = 0.4;
 export const MAX_IMAGE_ZOOM = 5;
 export const DRAFT_STORAGE_KEY = "face-contour-lab-draft-v1";
 export const DRAFT_DB_NAME = "face-contour-lab";
-export const DRAFT_DB_VERSION = 3;
+export const DRAFT_DB_VERSION = 4;
 export const DRAFT_STORE_NAME = "draft-assets";
 export const DRAFT_IMAGE_KEY = "current-image";
 export const PROJECT_STORE_NAME = "projects";
 export const PROJECT_IMAGE_STORE_NAME = "project-images";
 export const PROJECT_IMAGE_ASSET_STORE_NAME = "project-image-assets";
-export const CURRENT_PROJECT_KEY = "current-project";
+// v3 stored one image set at this fixed key. v4 only reads it during the
+// one-way local-project migration and never uses it for normal writes.
+export const LEGACY_CURRENT_PROJECT_KEY = "current-project";
 export const MAX_LEGACY_DRAFT_BYTES = 1500000;
 export const DRAFT_SAVE_DELAY_MS = 200;
 export const MAX_ANNOTATION_FILE_BYTES = 20 * 1024 * 1024;

@@ -16,6 +16,10 @@ import {
 import { createAnnotationProject, createProjectImage } from "../src/project.js";
 
 const FIXED_NOW = "2026-08-03T00:00:00.000Z";
+const INTERNAL_PROJECT_KEY = "project-internal-only";
+const INTERNAL_WRITE_TOKEN = "write-token-internal-only";
+const FIRST_IMAGE_ID = `project-image:${INTERNAL_PROJECT_KEY}:0001`;
+const THIRD_IMAGE_ID = `project-image:${INTERNAL_PROJECT_KEY}:0003`;
 
 function makeContour(id = "eye_1", x = 10) {
   return {
@@ -45,30 +49,35 @@ function makeImage({ id, path, width = 512, height = 512, status = "unlabeled", 
   });
 }
 
-function makeImageSet() {
+function makeImageSet({
+  localProjectKey = INTERNAL_PROJECT_KEY,
+  localWriteToken = INTERNAL_WRITE_TOKEN,
+} = {}) {
+  const imageId = (index) => `project-image:${localProjectKey}:${String(index).padStart(4, "0")}`;
   const imageSet = createAnnotationProject({
-    id: "internal_only",
+    localProjectKey,
+    localWriteToken,
     name: "Faces 01",
     images: [
       makeImage({
-        id: "img_1",
+        id: imageId(1),
         path: "front/001.jpg",
         status: "done",
         contours: [makeContour()],
       }),
       makeImage({
-        id: "img_2",
+        id: imageId(2),
         path: "side/002.jpg",
         width: 640,
         height: 480,
         status: "in_progress",
         contours: [makeContour("eye_2", 30)],
       }),
-      makeImage({ id: "img_3", path: "003.jpg", status: "skipped" }),
+      makeImage({ id: imageId(3), path: "003.jpg", status: "skipped" }),
     ],
     taskSchema: {},
   });
-  imageSet.currentImageId = "img_2";
+  imageSet.currentImageId = imageId(2);
   imageSet.images.forEach((image) => {
     image.updatedAt = FIXED_NOW;
   });
@@ -84,8 +93,9 @@ function assertTransferError(callback, code) {
 }
 
 function testBuildsOnePortableAnnotationFile() {
+  const imageSet = makeImageSet();
   const payload = buildAnnotationFile({
-    imageSet: makeImageSet(),
+    imageSet,
     labels: LABELS,
     exportedAt: FIXED_NOW,
   });
@@ -96,13 +106,15 @@ function testBuildsOnePortableAnnotationFile() {
   assert.deepEqual(payload.images.map((image) => image.status), ["done", "in_progress", "skipped"]);
   const serialized = JSON.stringify(payload);
   [
-    "internal_only",
     "data:image",
     "contentHash",
     "fileSize",
     "projectId",
+    "localProjectKey",
     "localWriteToken",
-    '\"id\":\"img_',
+    imageSet.localProjectKey,
+    imageSet.localWriteToken,
+    ...imageSet.images.map((image) => image.id),
   ].forEach(
     (forbidden) => assert.equal(serialized.includes(forbidden), false, forbidden),
   );
@@ -279,10 +291,46 @@ function testPlansAndAppliesPartialImport() {
     overwriteCount: 1,
   });
   const updated = applyAnnotationImport({ imageSet, annotations, plan, importedAt: FIXED_NOW });
-  assert.equal(updated.currentImageId, "img_1");
+  assert.equal(updated.currentImageId, FIRST_IMAGE_ID);
   assert.equal(updated.images[0].contours[0].id, "replacement");
   assert.equal(updated.images[1].contours[0].id, "eye_2");
   assert.notEqual(updated.images, imageSet.images);
+}
+
+function testSamePathImportLeavesAnotherProjectUntouched() {
+  const targetProject = makeImageSet();
+  const otherProject = makeImageSet({
+    localProjectKey: "project-with-the-same-paths",
+    localWriteToken: "write-token-for-the-other-project",
+  });
+  const otherBefore = structuredClone(otherProject);
+  const annotations = {
+    currentImagePath: "front/001.jpg",
+    images: [
+      {
+        relativePath: "front/001.jpg",
+        width: 512,
+        height: 512,
+        status: "skipped",
+        contours: [],
+      },
+    ],
+  };
+  const plan = planAnnotationImport({
+    annotations,
+    targetImages: targetProject.images,
+  });
+
+  const updatedTarget = applyAnnotationImport({
+    imageSet: targetProject,
+    annotations,
+    plan,
+    importedAt: FIXED_NOW,
+  });
+
+  assert.equal(updatedTarget.images[0].status, "skipped");
+  assert.equal(targetProject.images[0].status, "done");
+  assert.deepEqual(otherProject, otherBefore);
 }
 
 function testRepeatedApplyIsBusinessIdempotent() {
@@ -307,7 +355,7 @@ function testRepeatedApplyIsBusinessIdempotent() {
 
 function testCurrentImageOnlyMovesToAnAppliedMatch() {
   const imageSet = makeImageSet();
-  imageSet.currentImageId = "img_3";
+  imageSet.currentImageId = THIRD_IMAGE_ID;
   const annotations = {
     currentImagePath: "side/002.jpg",
     images: [
@@ -324,7 +372,7 @@ function testCurrentImageOnlyMovesToAnAppliedMatch() {
   assert.equal(plan.matches.length, 0);
   assert.equal(plan.conflicts.length, 1);
   const updated = applyAnnotationImport({ imageSet, annotations, plan, importedAt: FIXED_NOW });
-  assert.equal(updated.currentImageId, "img_3");
+  assert.equal(updated.currentImageId, THIRD_IMAGE_ID);
 }
 
 function testNoMatchesUsesStableErrorCode() {
@@ -345,6 +393,7 @@ testNormalizesAndRejectsUnsafePaths();
 testRejectsDuplicatePathsAndInvalidDoneRecord();
 testRejectsDuplicateContourIds();
 testPlansAndAppliesPartialImport();
+testSamePathImportLeavesAnotherProjectUntouched();
 testRepeatedApplyIsBusinessIdempotent();
 testCurrentImageOnlyMovesToAnAppliedMatch();
 testNoMatchesUsesStableErrorCode();

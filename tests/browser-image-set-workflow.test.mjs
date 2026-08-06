@@ -20,14 +20,9 @@ const WORKSPACE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const fflate = require("../vendor/fflate-0.8.3.js");
 const ZIP_FIXTURE = resolve(WORKSPACE, "tests/fixtures/image-set.zip");
-const BROKEN_ZIP_FIXTURE = resolve(WORKSPACE, "tests/fixtures/broken.zip");
 const PARTIAL_ANNOTATIONS_FIXTURE = resolve(
   WORKSPACE,
   "tests/fixtures/partial.face-contour-annotations.json",
-);
-const ROLLBACK_ANNOTATIONS_FIXTURE = resolve(
-  WORKSPACE,
-  "tests/fixtures/rollback.face-contour-annotations.json",
 );
 const SOURCE_REPLACEMENT_IMAGE = resolve(WORKSPACE, "samples/face-lena.jpg");
 const EXPECTED_PATHS = [
@@ -35,6 +30,10 @@ const EXPECTED_PATHS = [
   "faces/10-run-asset-type-samples.png",
   "faces/20-large-worker.bmp",
 ];
+const LEGACY_PROJECT_NAME = "Legacy v3 project";
+const LEGACY_IMAGE_ID = "legacy-v3-image";
+const LEGACY_IMAGE_PATH = "legacy/face-lena.jpg";
+const LEGACY_PROJECT_UPDATED_AT = "2026-08-04T08:00:00.000Z";
 const MIME_TYPES = new Map([
   [".bmp", "image/bmp"],
   [".css", "text/css; charset=utf-8"],
@@ -114,6 +113,14 @@ function startStaticServer() {
   const server = createServer((request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
+      if (pathname === "/__browser_test_seed__.html") {
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/html; charset=utf-8",
+        });
+        response.end("<!doctype html><html><head><title>Database seed</title></head><body></body></html>");
+        return;
+      }
       const requestedPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
       const absolutePath = resolve(WORKSPACE, requestedPath);
       if (absolutePath !== WORKSPACE && !absolutePath.startsWith(`${WORKSPACE}${sep}`)) {
@@ -253,12 +260,292 @@ async function readBusinessState(client) {
   })()`);
 }
 
-async function readStoredState(client) {
+async function readStoredState(client, localProjectKey) {
   return client.evaluate(`(async () => {
     const storage = await import("/src/storage.js?v=browser-image-set-storage-inspection");
-    const metadata = await storage.getCurrentProject();
-    const records = await storage.getProjectImageRecords(metadata.images.map((image) => image.id));
-    return { metadata, records };
+    const metadata = await storage.getLocalProject(${JSON.stringify(localProjectKey)});
+    if (!metadata) {
+      return null;
+    }
+    const imageIds = metadata.images.map((image) => image.id);
+    const records = await storage.getLocalProjectImageRecords(
+      ${JSON.stringify(localProjectKey)},
+      imageIds,
+    );
+    const assets = await Promise.all(
+      imageIds.map((imageId) =>
+        storage.getLocalProjectImageAsset(${JSON.stringify(localProjectKey)}, imageId)
+      ),
+    );
+    return {
+      metadata,
+      records,
+      assetIds: assets.map((asset) => asset?.id || null),
+    };
+  })()`);
+}
+
+async function readStoredProjects(client) {
+  return client.evaluate(`(async () => {
+    const storage = await import("/src/storage.js?v=browser-image-set-library-inspection");
+    return storage.listLocalProjects();
+  })()`);
+}
+
+async function readProjectStoreCounts(client) {
+  return client.evaluate(`(async () => {
+    const config = await import("/src/config.js?v=browser-image-set-count-inspection");
+    const database = await new Promise((resolveOpen, rejectOpen) => {
+      const request = indexedDB.open(config.DRAFT_DB_NAME, config.DRAFT_DB_VERSION);
+      request.onsuccess = () => resolveOpen(request.result);
+      request.onerror = () => rejectOpen(request.error);
+    });
+    try {
+      const transaction = database.transaction(
+        [
+          config.PROJECT_STORE_NAME,
+          config.PROJECT_IMAGE_STORE_NAME,
+          config.PROJECT_IMAGE_ASSET_STORE_NAME,
+        ],
+        "readonly",
+      );
+      const count = (storeName) => new Promise((resolveCount, rejectCount) => {
+        const request = transaction.objectStore(storeName).count();
+        request.onsuccess = () => resolveCount(request.result);
+        request.onerror = () => rejectCount(request.error);
+      });
+      const [projects, records, assets] = await Promise.all([
+        count(config.PROJECT_STORE_NAME),
+        count(config.PROJECT_IMAGE_STORE_NAME),
+        count(config.PROJECT_IMAGE_ASSET_STORE_NAME),
+      ]);
+      return { projects, records, assets };
+    } finally {
+      database.close();
+    }
+  })()`);
+}
+
+async function seedLegacyV3Project(client) {
+  return client.evaluate(`(async () => {
+    const config = await import("/src/config.js?v=browser-legacy-v3-seed");
+    await new Promise((resolveDelete, rejectDelete) => {
+      const request = indexedDB.deleteDatabase(config.DRAFT_DB_NAME);
+      request.onsuccess = () => resolveDelete();
+      request.onerror = () => rejectDelete(request.error);
+      request.onblocked = () => rejectDelete(new Error("Legacy seed database deletion was blocked."));
+    });
+    const response = await fetch("/samples/face-lena.jpg", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("Legacy source image could not be fetched.");
+    }
+    const sourceBlob = await response.blob();
+    const dataUrl = await new Promise((resolveDataUrl, rejectDataUrl) => {
+      const reader = new FileReader();
+      reader.onload = () => resolveDataUrl(reader.result);
+      reader.onerror = () => rejectDataUrl(reader.error);
+      reader.readAsDataURL(sourceBlob);
+    });
+    const contour = {
+      id: "legacy-face-outline",
+      label: "face_outline",
+      closed: true,
+      points: [
+        { x: 96, y: 72 },
+        { x: 416, y: 72 },
+        { x: 416, y: 440 },
+        { x: 96, y: 440 },
+      ],
+    };
+    const imageMetadata = {
+      id: ${JSON.stringify(LEGACY_IMAGE_ID)},
+      name: "face-lena.jpg",
+      path: ${JSON.stringify(LEGACY_IMAGE_PATH)},
+      width: 512,
+      height: 512,
+      status: "needs_review",
+      selectedId: contour.id,
+      updatedAt: ${JSON.stringify(LEGACY_PROJECT_UPDATED_AT)},
+    };
+    const legacyProject = {
+      name: ${JSON.stringify(LEGACY_PROJECT_NAME)},
+      version: "face-contour-project-v1",
+      source: {
+        type: "folder",
+        importedAt: ${JSON.stringify(LEGACY_PROJECT_UPDATED_AT)},
+      },
+      localWriteToken: "legacy-v3-write-token",
+      taskSchema: { labels: [] },
+      images: [imageMetadata],
+      currentImageId: imageMetadata.id,
+      preferences: {
+        activeLabel: "face_outline",
+        mode: "refine",
+        drawClosed: true,
+        softDrag: true,
+        showPoints: true,
+        softRadius: 40,
+        imageZoom: 1,
+      },
+      createdAt: ${JSON.stringify(LEGACY_PROJECT_UPDATED_AT)},
+      updatedAt: ${JSON.stringify(LEGACY_PROJECT_UPDATED_AT)},
+    };
+    const database = await new Promise((resolveOpen, rejectOpen) => {
+      const request = indexedDB.open(config.DRAFT_DB_NAME, 3);
+      request.onupgradeneeded = () => {
+        const opened = request.result;
+        [
+          config.DRAFT_STORE_NAME,
+          config.PROJECT_STORE_NAME,
+          config.PROJECT_IMAGE_STORE_NAME,
+          config.PROJECT_IMAGE_ASSET_STORE_NAME,
+        ].forEach((storeName) => {
+          if (!opened.objectStoreNames.contains(storeName)) {
+            opened.createObjectStore(storeName);
+          }
+        });
+      };
+      request.onsuccess = () => resolveOpen(request.result);
+      request.onerror = () => rejectOpen(request.error);
+      request.onblocked = () => rejectOpen(new Error("Legacy seed database open was blocked."));
+    });
+    try {
+      await new Promise((resolveWrite, rejectWrite) => {
+        const transaction = database.transaction(
+          [
+            config.PROJECT_STORE_NAME,
+            config.PROJECT_IMAGE_STORE_NAME,
+            config.PROJECT_IMAGE_ASSET_STORE_NAME,
+          ],
+          "readwrite",
+        );
+        transaction.objectStore(config.PROJECT_STORE_NAME).put(
+          legacyProject,
+          config.LEGACY_CURRENT_PROJECT_KEY,
+        );
+        transaction.objectStore(config.PROJECT_IMAGE_STORE_NAME).put(
+          { ...imageMetadata, contours: [contour] },
+          imageMetadata.id,
+        );
+        transaction.objectStore(config.PROJECT_IMAGE_ASSET_STORE_NAME).put(
+          {
+            id: imageMetadata.id,
+            dataUrl,
+            updatedAt: imageMetadata.updatedAt,
+          },
+          imageMetadata.id,
+        );
+        transaction.oncomplete = () => resolveWrite();
+        transaction.onerror = () =>
+          rejectWrite(transaction.error || new Error("Legacy seed transaction failed."));
+        transaction.onabort = () =>
+          rejectWrite(transaction.error || new Error("Legacy seed transaction aborted."));
+      });
+      return {
+        databaseVersion: database.version,
+        projectKey: config.LEGACY_CURRENT_PROJECT_KEY,
+        imageId: imageMetadata.id,
+        dataUrlLength: dataUrl.length,
+      };
+    } finally {
+      database.close();
+    }
+  })()`);
+}
+
+async function readRawProjectStorageEntry(client, { localProjectKey, imageId }) {
+  return client.evaluate(`(async () => {
+    const config = await import("/src/config.js?v=browser-raw-project-storage");
+    const database = await new Promise((resolveOpen, rejectOpen) => {
+      const request = indexedDB.open(config.DRAFT_DB_NAME, config.DRAFT_DB_VERSION);
+      request.onsuccess = () => resolveOpen(request.result);
+      request.onerror = () => rejectOpen(request.error);
+    });
+    try {
+      const transaction = database.transaction(
+        [
+          config.PROJECT_STORE_NAME,
+          config.PROJECT_IMAGE_STORE_NAME,
+          config.PROJECT_IMAGE_ASSET_STORE_NAME,
+        ],
+        "readonly",
+      );
+      const read = (storeName, key) => new Promise((resolveRead, rejectRead) => {
+        const request = transaction.objectStore(storeName).get(key);
+        request.onsuccess = () => resolveRead(request.result || null);
+        request.onerror = () => rejectRead(request.error);
+      });
+      const readKeys = (storeName) => new Promise((resolveRead, rejectRead) => {
+        const request = transaction.objectStore(storeName).getAllKeys();
+        request.onsuccess = () => resolveRead(request.result);
+        request.onerror = () => rejectRead(request.error);
+      });
+      const [
+        legacyMetadata,
+        metadata,
+        record,
+        asset,
+        projectKeys,
+        recordKeys,
+        assetKeys,
+      ] = await Promise.all([
+        read(config.PROJECT_STORE_NAME, config.LEGACY_CURRENT_PROJECT_KEY),
+        read(config.PROJECT_STORE_NAME, ${JSON.stringify(localProjectKey)}),
+        read(config.PROJECT_IMAGE_STORE_NAME, ${JSON.stringify(imageId)}),
+        read(config.PROJECT_IMAGE_ASSET_STORE_NAME, ${JSON.stringify(imageId)}),
+        readKeys(config.PROJECT_STORE_NAME),
+        readKeys(config.PROJECT_IMAGE_STORE_NAME),
+        readKeys(config.PROJECT_IMAGE_ASSET_STORE_NAME),
+      ]);
+      return {
+        databaseVersion: database.version,
+        legacyMetadata,
+        metadata,
+        record,
+        asset,
+        projectKeys,
+        recordKeys,
+        assetKeys,
+      };
+    } finally {
+      database.close();
+    }
+  })()`);
+}
+
+async function readHubState(client) {
+  return client.evaluate(`(() => ({
+    hubVisible: document.querySelector("#projectHubView").hidden === false,
+    workspaceHidden: document.querySelector("#annotationWorkspaceView").hidden === true,
+    countLabel: document.querySelector("#projectLibraryCount").textContent.trim(),
+    emptyVisible: document.querySelector("#projectListEmpty").hidden === false,
+    names: Array.from(document.querySelectorAll(".project-card-name"), (node) =>
+      node.textContent.trim()
+    ),
+    progress: Array.from(document.querySelectorAll(".project-card-progress"), (node) =>
+      node.textContent.trim()
+    ),
+    status: document.querySelector("#hubStatusText").textContent.trim(),
+    hash: window.location.hash,
+  }))()`);
+}
+
+async function clickProjectCardAction(client, projectName, actionSelector) {
+  return client.evaluate(`(() => {
+    const card = Array.from(document.querySelectorAll(".project-card")).find(
+      (candidate) =>
+        candidate.querySelector(".project-card-name")?.textContent.trim() ===
+        ${JSON.stringify(projectName)},
+    );
+    if (!card) {
+      throw new Error("Project card was not found: " + ${JSON.stringify(projectName)});
+    }
+    const action = card.querySelector(${JSON.stringify(actionSelector)});
+    if (!action) {
+      throw new Error("Project card action was not found: " + ${JSON.stringify(actionSelector)});
+    }
+    action.click();
+    return true;
   })()`);
 }
 
@@ -271,7 +558,7 @@ async function reloadPage(client) {
     `document.documentElement.dataset.e2eReloadMarker = ${JSON.stringify(previousDocumentMarker)}`,
   );
   const eventOffset = client.events.length;
-  const reloadUrl = new URL(appUrl);
+  const reloadUrl = new URL(await client.evaluate("window.location.href"));
   reloadUrl.searchParams.set("e2e-reload", String(reloadSequence));
   const navigation = await client.send("Page.navigate", { url: reloadUrl.href });
   if (navigation.errorText) {
@@ -300,22 +587,25 @@ const chromePath = findChrome();
 if (!chromePath || typeof WebSocket !== "function") {
   const reason = !chromePath ? "Chrome/Edge was not found" : "Node WebSocket is unavailable";
   if (process.env.ALLOW_BROWSER_TEST_SKIP === "1") {
-    console.log(`browser image-set workflow test skipped (${reason})`);
+    console.log("browser image-set workflow test skipped (" + reason + ")");
     process.exit(0);
   }
   throw new Error(
-    `${reason}. Set CHROME_BIN, or set ALLOW_BROWSER_TEST_SKIP=1 only when an explicit skip is intended.`,
+    reason +
+      ". Set CHROME_BIN, or set ALLOW_BROWSER_TEST_SKIP=1 only when an explicit skip is intended.",
   );
 }
 
 const server = await startStaticServer();
 const address = server.address();
-const appUrl = `http://127.0.0.1:${address.port}/?browser-image-set-workflow=1`;
+const appUrl =
+  "http://127.0.0.1:" + address.port + "/?browser-image-set-workflow=1";
+const seedUrl = "http://127.0.0.1:" + address.port + "/__browser_test_seed__.html";
 const profileDirectory = mkdtempSync(join(tmpdir(), "face-contour-browser-test-"));
 const resolvedProfileDirectory = resolve(profileDirectory);
 const resolvedTemporaryRoot = resolve(tmpdir());
 assert.equal(
-  resolvedProfileDirectory.startsWith(`${resolvedTemporaryRoot}${sep}`),
+  resolvedProfileDirectory.startsWith(resolvedTemporaryRoot + sep),
   true,
   "The disposable browser profile must stay inside the system temporary directory.",
 );
@@ -328,13 +618,14 @@ writeFileSync(
   fflate.zipSync(
     Object.fromEntries(
       Array.from({ length: 8 }, (_value, index) => [
-        `workers/${String(index + 1).padStart(2, "0")}.jpg`,
+        "workers/" + String(index + 1).padStart(2, "0") + ".jpg",
         boundedWorkerSource,
       ]),
     ),
     { level: 6 },
   ),
 );
+
 const browserProcess = spawn(
   chromePath,
   [
@@ -346,9 +637,9 @@ const browserProcess = spawn(
     "--disable-sync",
     "--no-default-browser-check",
     "--no-first-run",
-    `--user-data-dir=${profileDirectory}`,
+    "--user-data-dir=" + profileDirectory,
     "--remote-debugging-port=0",
-    appUrl,
+    seedUrl,
   ],
   { stdio: ["ignore", "ignore", "pipe"] },
 );
@@ -358,634 +649,500 @@ try {
   const browserWebSocketUrl = await waitForDevTools(browserProcess);
   const browserEndpoint = new URL(browserWebSocketUrl);
   const target = await waitFor(async () => {
-    const response = await fetch(`http://${browserEndpoint.host}/json/list`);
+    const response = await fetch("http://" + browserEndpoint.host + "/json/list");
     const targets = await response.json();
-    return targets.find((item) => item.type === "page" && item.url.startsWith(appUrl));
-  }, "the application page target");
+    return targets.find((item) => item.type === "page" && item.url.startsWith(seedUrl));
+  }, "the database seed page target");
   client = await CdpClient.connect(target.webSocketDebuggerUrl);
   await Promise.all([
     client.send("DOM.enable"),
     client.send("Page.enable"),
     client.send("Runtime.enable"),
   ]);
-  await client.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: `(() => {
-      const NativeWorker = window.Worker;
-      window.__zipWorkerCount = 0;
-      window.__zipWorkerActive = 0;
-      window.__zipWorkerPeak = 0;
-      function InstrumentedWorker(...args) {
-        window.__zipWorkerCount += 1;
-        window.__zipWorkerActive += 1;
-        window.__zipWorkerPeak = Math.max(
-          window.__zipWorkerPeak,
-          window.__zipWorkerActive,
-        );
-        const worker = new NativeWorker(...args);
-        const nativeTerminate = worker.terminate.bind(worker);
-        let active = true;
-        worker.terminate = (...terminateArgs) => {
-          if (active) {
-            active = false;
-            window.__zipWorkerActive -= 1;
-          }
-          return nativeTerminate(...terminateArgs);
-        };
-        return worker;
-      }
-      InstrumentedWorker.prototype = NativeWorker.prototype;
-      Object.setPrototypeOf(InstrumentedWorker, NativeWorker);
-      window.Worker = InstrumentedWorker;
-    })();`,
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false,
   });
+  const seedNavigation = await client.send("Page.navigate", { url: seedUrl });
+  if (seedNavigation.errorText) {
+    throw new Error("Legacy database seed navigation failed: " + seedNavigation.errorText);
+  }
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.readyState === "complete" && document.title === "Database seed"',
+      ),
+    "the legacy database seed page",
+  );
+  const legacySeed = await seedLegacyV3Project(client);
+  assert.equal(legacySeed.databaseVersion, 3);
+  assert.equal(legacySeed.projectKey, "current-project");
+  assert.equal(legacySeed.imageId, LEGACY_IMAGE_ID);
+  assert.equal(legacySeed.dataUrlLength > 1000, true);
+
+  const initialNavigation = await client.send("Page.navigate", { url: appUrl });
+  if (initialNavigation.errorText) {
+    throw new Error("Initial application navigation failed: " + initialNavigation.errorText);
+  }
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.readyState === "complete" && document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "1 project" && document.querySelector("#hubStatusText").textContent.includes("Recovered the previous image set")',
+      ),
+    "the migrated legacy project in the hub",
+    30_000,
+  );
+
+  const migratedProjects = await readStoredProjects(client);
+  assert.equal(migratedProjects.length, 1);
+  const [migratedLegacyProject] = migratedProjects;
+  assert.equal(migratedLegacyProject.name, LEGACY_PROJECT_NAME);
+  assert.notEqual(migratedLegacyProject.localProjectKey, "current-project");
+  assert.equal(migratedLegacyProject.images[0].id, LEGACY_IMAGE_ID);
+  const migratedRawState = await readRawProjectStorageEntry(client, {
+    localProjectKey: migratedLegacyProject.localProjectKey,
+    imageId: LEGACY_IMAGE_ID,
+  });
+  assert.equal(migratedRawState.databaseVersion, 4);
+  assert.equal(migratedRawState.legacyMetadata, null);
+  assert.equal(
+    migratedRawState.metadata.localProjectKey,
+    migratedLegacyProject.localProjectKey,
+  );
+  assert.equal(migratedRawState.metadata.images[0].id, LEGACY_IMAGE_ID);
+  assert.equal(migratedRawState.record.status, "needs_review");
+  assert.equal(migratedRawState.record.contours[0].id, "legacy-face-outline");
+  assert.equal(migratedRawState.asset.id, LEGACY_IMAGE_ID);
+  assert.match(migratedRawState.asset.dataUrl, /^data:image\/jpeg;base64,/);
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: 1,
+    records: 1,
+    assets: 1,
+  });
+
+  await clickProjectCardAction(client, LEGACY_PROJECT_NAME, ".open-project-button");
+  await waitFor(
+    () =>
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#projectName").textContent === "Legacy v3 project" && payload.images[0].relativePath === "legacy/face-lena.jpg" && payload.images[0].status === "needs_review" && payload.images[0].contours.length === 1 && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
+      ),
+    "the migrated legacy project workspace",
+    30_000,
+  );
+  const migratedProjectHash = await client.evaluate("window.location.hash");
+  assert.match(migratedProjectHash, /^#\/project\/[^/]+$/);
+  const migratedBusinessState = await readBusinessState(client);
+  assert.equal(migratedBusinessState.imageSize, "512 x 512");
+  assert.equal(migratedBusinessState.showPoints, true);
+  assert.deepEqual(migratedBusinessState.contourCounts, [1]);
   await reloadPage(client);
   await waitFor(
     () =>
       client.evaluate(
-        'document.readyState === "complete" && Boolean(document.querySelector("#zipInput")) && window.__zipWorkerCount === 0',
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#projectName").textContent === "Legacy v3 project" && payload.images[0].status === "needs_review" && payload.images[0].contours.length === 1 && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
       ),
-    "the application shell",
+    "the migrated legacy project after refresh",
+    30_000,
   );
-
-  const emptySidebarState = await client.evaluate(`(() => ({
-    sourceOpen: document.querySelector("#sourceDisclosure").open,
-    projectSummaryHidden: document.querySelector("#projectSummary").hidden,
-    imageWorkflowHidden: document.querySelector("#imageWorkflowSection").hidden,
-    annotationHidden: document.querySelector("#annotationControls").hidden,
-    actionsHidden: document.querySelector("#actionsSection").hidden,
-    projectSummaryVisible: document.querySelector("#projectSummary").offsetParent !== null,
-    imageWorkflowVisible: document.querySelector("#imageWorkflowSection").offsetParent !== null,
-    annotationVisible: document.querySelector("#annotationControls").offsetParent !== null,
-    actionsVisible: document.querySelector("#actionsSection").offsetParent !== null,
-    emptyOpenLabel: document.querySelector("#emptyOpenButton").textContent.trim(),
-  }))()`);
-  assert.deepEqual(emptySidebarState, {
-    sourceOpen: true,
-    projectSummaryHidden: true,
-    imageWorkflowHidden: true,
-    annotationHidden: true,
-    actionsHidden: true,
-    projectSummaryVisible: false,
-    imageWorkflowVisible: false,
-    annotationVisible: false,
-    actionsVisible: false,
-    emptyOpenLabel: "Open folder",
-  });
-  const emptyOpenRouting = await client.evaluate(`(() => {
-    const folderInput = document.querySelector("#folderInput");
-    const imageInput = document.querySelector("#imageInput");
-    const originalFolderClick = folderInput.click;
-    const originalImageClick = imageInput.click;
-    let folderClicks = 0;
-    let imageClicks = 0;
-    folderInput.click = () => { folderClicks += 1; };
-    imageInput.click = () => { imageClicks += 1; };
-    document.querySelector("#emptyOpenButton").click();
-    folderInput.click = originalFolderClick;
-    imageInput.click = originalImageClick;
-    return { folderClicks, imageClicks };
-  })()`);
-  assert.deepEqual(emptyOpenRouting, { folderClicks: 1, imageClicks: 0 });
-
-  await client.setFiles("#zipInput", [boundedWorkerZip]);
+  assert.equal(await client.evaluate("window.location.hash"), migratedProjectHash);
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
   await waitFor(
     () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return document.querySelector("#projectName").textContent === "bounded-workers" &&
-            payload.images.length === 8 &&
-            document.querySelector("#projectSaveState").dataset.state === "saved" &&
-            window.__zipWorkerActive === 0;
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the bounded ZIP worker fixture",
-    45_000,
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "1 project"',
+      ),
+    "the hub after closing the migrated legacy project",
   );
-  const boundedWorkerEvidence = await client.evaluate(`(() => ({
-    total: window.__zipWorkerCount,
-    peak: window.__zipWorkerPeak,
-    active: window.__zipWorkerActive,
-  }))()`);
-  assert.equal(boundedWorkerEvidence.total, 8);
-  assert.equal(boundedWorkerEvidence.peak <= 3, true);
-  assert.equal(boundedWorkerEvidence.peak >= 2, true);
-  assert.equal(boundedWorkerEvidence.active, 0);
-  await client.evaluate(`(() => {
-    window.__zipWorkerCount = 0;
-    window.__zipWorkerActive = 0;
-    window.__zipWorkerPeak = 0;
-  })()`);
-
-  await client.setFiles("#zipInput", [ZIP_FIXTURE]);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return document.querySelector("#projectName").textContent === "image-set" &&
-            document.querySelector("#projectSaveState").dataset.state === "saved" &&
-            JSON.stringify(payload.images.map((image) => image.relativePath)) === ${JSON.stringify(JSON.stringify(EXPECTED_PATHS))};
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the real ZIP image set",
-    45_000,
-  );
-  const opened = await readBusinessState(client);
-  assert.equal(opened.position, "1 / 3");
-  assert.deepEqual(opened.paths, EXPECTED_PATHS);
-  assert.equal(await client.evaluate("window.__zipWorkerCount > 0"), true);
-  assert.equal(await client.evaluate("window.__zipWorkerPeak <= 3"), true);
-  assert.equal(await client.evaluate("window.__zipWorkerActive"), 0);
-
-  const workingSidebarState = await client.evaluate(`(() => ({
-    sourceOpen: document.querySelector("#sourceDisclosure").open,
-    sourceLabel: document.querySelector("#sourceDisclosureLabel").textContent.trim(),
-    projectSummaryHidden: document.querySelector("#projectSummary").hidden,
-    imageWorkflowHidden: document.querySelector("#imageWorkflowSection").hidden,
-    annotationHidden: document.querySelector("#annotationControls").hidden,
-    actionsHidden: document.querySelector("#actionsSection").hidden,
-    queueOpen: document.querySelector("#imageQueueDisclosure").open,
-    queueSummary: document.querySelector("#imageQueueSummary").textContent.trim(),
-    queueItems: document.querySelectorAll("#imageQueueList .queue-item").length,
-    drawHidden: document.querySelector("#drawToolsSection").hidden,
-    refineHidden: document.querySelector("#refineToolsSection").hidden,
-    projectSummaryVisible: document.querySelector("#projectSummary").offsetParent !== null,
-    imageWorkflowVisible: document.querySelector("#imageWorkflowSection").offsetParent !== null,
-    annotationVisible: document.querySelector("#annotationControls").offsetParent !== null,
-    actionsVisible: document.querySelector("#actionsSection").offsetParent !== null,
-    sourceBodyVisible: document.querySelector("#sourceDisclosure .disclosure-body").offsetParent !== null,
-    queueBodyVisible: document.querySelector("#imageQueueDisclosure .disclosure-body").offsetParent !== null,
-    moreActionsBodyVisible: document.querySelector("#moreActionsDisclosure .disclosure-body").offsetParent !== null,
-    actionIds: Array.from(document.querySelectorAll("#actionsSection button"), (button) => button.id),
-    moreActionIds: Array.from(
-      document.querySelectorAll("#moreActionsDisclosure button"),
-      (button) => button.id,
-    ),
-    sideFitCount: document.querySelectorAll("#fitButton").length,
-    workspaceFitCount: document.querySelectorAll("#zoomFitButton").length,
-  }))()`);
-  assert.deepEqual(workingSidebarState, {
-    sourceOpen: false,
-    sourceLabel: "Open or replace image set",
-    projectSummaryHidden: false,
-    imageWorkflowHidden: false,
-    annotationHidden: false,
-    actionsHidden: false,
-    queueOpen: false,
-    queueSummary: "3 images",
-    queueItems: 3,
-    drawHidden: false,
-    refineHidden: true,
-    projectSummaryVisible: true,
-    imageWorkflowVisible: true,
-    annotationVisible: true,
-    actionsVisible: true,
-    sourceBodyVisible: false,
-    queueBodyVisible: false,
-    moreActionsBodyVisible: false,
-    actionIds: ["undoButton", "redoButton", "deleteButton"],
-    moreActionIds: ["initializeTemplateButton", "clearButton"],
-    sideFitCount: 0,
-    workspaceFitCount: 1,
-  });
-
-  const disclosureInteraction = await client.evaluate(`(() => {
-    const sourceDisclosure = document.querySelector("#sourceDisclosure");
-    const queueDisclosure = document.querySelector("#imageQueueDisclosure");
-    sourceDisclosure.querySelector("summary").click();
-    const sourceOpened = sourceDisclosure.open;
-    const sourceButtonsVisible = ["openFolderButton", "openImageButton", "openZipButton"].every(
-      (id) => document.querySelector("#" + id).offsetParent !== null,
-    );
-    sourceDisclosure.querySelector("summary").click();
-    queueDisclosure.querySelector("summary").click();
-    const queueOpened = queueDisclosure.open;
-    queueDisclosure.querySelector("summary").click();
-    return {
-      sourceOpened,
-      sourceButtonsVisible,
-      sourceClosed: !sourceDisclosure.open,
-      queueOpened,
-      queueClosed: !queueDisclosure.open,
-    };
-  })()`);
-  assert.deepEqual(disclosureInteraction, {
-    sourceOpened: true,
-    sourceButtonsVisible: true,
-    sourceClosed: true,
-    queueOpened: true,
-    queueClosed: true,
-  });
-
-  await client.evaluate(
-    'document.querySelector(".mode-button[data-mode=refine]").click()',
-  );
-  await waitFor(
-    () =>
-      client.evaluate(`(() =>
-        document.querySelector("#drawToolsSection").hidden &&
-        !document.querySelector("#refineToolsSection").hidden &&
-        document.querySelector(".mode-button[data-mode=refine]").classList.contains("is-active")
-      )()`),
-    "the contextual Refine controls",
-  );
-  await client.evaluate('document.querySelector(".mode-button[data-mode=draw]").click()');
-  await waitFor(
-    () =>
-      client.evaluate(`(() =>
-        !document.querySelector("#drawToolsSection").hidden &&
-        document.querySelector("#refineToolsSection").hidden &&
-        document.querySelector(".mode-button[data-mode=draw]").classList.contains("is-active") &&
-        document.querySelector("#projectSaveState").dataset.state === "saved"
-      )()`),
-    "the restored Draw controls and saved preference",
-  );
-
   await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 1280,
+    width: 320,
     height: 720,
     deviceScaleFactor: 1,
-    mobile: false,
+    mobile: true,
   });
   await waitFor(
-    () => client.evaluate("window.innerWidth === 1280 && window.innerHeight === 720"),
-    "the desktop sidebar viewport",
+    () => client.evaluate("window.innerWidth === 320 && window.innerHeight === 720"),
+    "the narrow mobile hub viewport",
   );
-  const desktopSidebarLayout = await client.evaluate(`(() => {
-    const appRect = document.querySelector(".app").getBoundingClientRect();
-    const sidebarRect = document.querySelector(".sidebar").getBoundingClientRect();
-    const sidebarScroll = document.querySelector(".sidebar-scroll");
-    const actionsRect = document.querySelector("#actionsSection").getBoundingClientRect();
-    const projectName = document.querySelector("#projectName");
-    const originalProjectName = projectName.textContent;
-    projectName.textContent = "folder-" + "x".repeat(120);
-    const projectSummaryRect = document.querySelector("#projectSummary").getBoundingClientRect();
-    const projectProgressRect = document.querySelector("#projectProgress").getBoundingClientRect();
-    const longNameEvidence = {
-      sidebarHasNoHorizontalOverflow:
-        sidebarScroll.scrollWidth <= sidebarScroll.clientWidth + 1,
-      projectSummaryFits: projectSummaryRect.right <= sidebarRect.right + 1,
-      longNameTruncated: projectName.scrollWidth > projectName.clientWidth,
-      projectProgressVisible:
-        projectProgressRect.left >= sidebarRect.left &&
-        projectProgressRect.right <= sidebarRect.right + 1,
-    };
-    projectName.textContent = originalProjectName;
+  const narrowHubEvidence = await client.evaluate(`(() => {
+    const hub = document.querySelector("#projectHubView");
+    const actions = document.querySelector(".project-card-actions");
+    const actionBounds = actions.getBoundingClientRect();
+    const buttons = Array.from(actions.querySelectorAll("button"));
     return {
-      appFits: appRect.bottom <= window.innerHeight + 1,
-      sidebarFits: sidebarRect.bottom <= window.innerHeight + 1,
-      actionsVisible:
-        actionsRect.top >= 0 && actionsRect.bottom <= window.innerHeight + 1,
-      annotationsScroll: sidebarScroll.scrollHeight > sidebarScroll.clientHeight,
-      ...longNameEvidence,
+      flexDirection: getComputedStyle(actions).flexDirection,
+      horizontalOverflow: hub.scrollWidth > hub.clientWidth + 1,
+      buttonsInsideActions: buttons.every((button) => {
+        const bounds = button.getBoundingClientRect();
+        return bounds.left >= actionBounds.left - 1 && bounds.right <= actionBounds.right + 1;
+      }),
+      buttonHeights: buttons.map((button) => button.getBoundingClientRect().height),
     };
   })()`);
-  assert.deepEqual(desktopSidebarLayout, {
-    appFits: true,
-    sidebarFits: true,
-    actionsVisible: true,
-    annotationsScroll: true,
-    sidebarHasNoHorizontalOverflow: true,
-    projectSummaryFits: true,
-    longNameTruncated: true,
-    projectProgressVisible: true,
-  });
-
+  assert.equal(narrowHubEvidence.flexDirection, "column");
+  assert.equal(narrowHubEvidence.horizontalOverflow, false);
+  assert.equal(narrowHubEvidence.buttonsInsideActions, true);
+  assert.equal(narrowHubEvidence.buttonHeights.every((height) => height >= 44), true);
   await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 680,
-    height: 900,
+    width: 1440,
+    height: 1000,
     deviceScaleFactor: 1,
     mobile: false,
   });
   await waitFor(
-    () => client.evaluate("window.innerWidth === 680"),
-    "the narrow sidebar viewport",
+    () => client.evaluate("window.innerWidth === 1440 && window.innerHeight === 1000"),
+    "the restored desktop hub viewport",
   );
-  const narrowLayout = await client.evaluate(`(() => {
-    const appStyle = getComputedStyle(document.querySelector(".app"));
-    const labelGrid = document.querySelector("#labelGrid");
-    const labelStyle = getComputedStyle(labelGrid);
-    return {
-      appDisplay: appStyle.display,
-      labelOverflowX: labelStyle.overflowX,
-      labelsScroll: labelGrid.scrollWidth > labelGrid.clientWidth,
-      pageFits: document.documentElement.scrollWidth <= window.innerWidth + 1,
-    };
-  })()`);
-  assert.deepEqual(narrowLayout, {
-    appDisplay: "block",
-    labelOverflowX: "auto",
-    labelsScroll: true,
-    pageFits: true,
+  await client.evaluate("window.confirm = () => true");
+  await clickProjectCardAction(client, LEGACY_PROJECT_NAME, ".delete-project-button");
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectLibraryCount").textContent.trim() === "0 projects"',
+      ),
+    "the migrated legacy project deletion",
+  );
+  const deletedLegacyRawState = await readRawProjectStorageEntry(client, {
+    localProjectKey: migratedLegacyProject.localProjectKey,
+    imageId: LEGACY_IMAGE_ID,
   });
-  await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 1280,
-    height: 800,
-    deviceScaleFactor: 1,
-    mobile: false,
+  assert.equal(deletedLegacyRawState.legacyMetadata, null);
+  assert.equal(deletedLegacyRawState.metadata, null);
+  assert.equal(deletedLegacyRawState.record, null);
+  assert.equal(deletedLegacyRawState.asset, null);
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: 0,
+    records: 0,
+    assets: 0,
   });
-  await waitFor(
-    () => client.evaluate('window.innerWidth === 1280 && getComputedStyle(document.querySelector(".app")).display === "grid"'),
-    "the restored desktop layout",
-  );
-  await client.send("Emulation.clearDeviceMetricsOverride");
 
-  const synchronousWriteFailure = await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    let rejected = false;
-    try {
-      await storage.putProjectImageRecords([
-        {
-          id: "sync-abort-probe",
-          name: "sync-abort-probe.jpg",
-          path: "sync-abort-probe.jpg",
-          width: 1,
-          height: 1,
-          status: "unlabeled",
-          contours: [],
-        },
-        {
-          id: "sync-abort-trigger",
-          name: "sync-abort-trigger.jpg",
-          path: "sync-abort-trigger.jpg",
-          width: 1,
-          height: 1,
-          status: "unlabeled",
-          contours: [{ id: "invalid", points: null }],
-        },
-      ]);
-    } catch (error) {
-      rejected = true;
-    }
-    return {
-      rejected,
-      leakedRecord: await storage.getProjectImageRecord("sync-abort-probe"),
-    };
-  })()`);
-  assert.equal(synchronousWriteFailure.rejected, true);
-  assert.equal(synchronousWriteFailure.leakedRecord, null);
-
-  const beforeFailedImageSwitch = await readBusinessState(client);
-  const storedBeforeFailedImageSwitch = await readStoredState(client);
-  await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    const metadata = await storage.getCurrentProject();
-    const targetId = metadata.images[2].id;
-    window.__e2eOriginalTargetAsset = await storage.getProjectImageAsset(targetId);
-    await storage.putProjectImageAsset({
-      id: targetId,
-      dataUrl: "data:image/jpeg;base64,AA==",
-      updatedAt: new Date().toISOString(),
-    });
-    document.querySelectorAll("#imageQueueList .queue-item")[2].click();
-  })()`);
+  const rollbackSeedNavigation = await client.send("Page.navigate", { url: seedUrl });
+  if (rollbackSeedNavigation.errorText) {
+    throw new Error(
+      "Legacy migration rollback seed navigation failed: " +
+        rollbackSeedNavigation.errorText,
+    );
+  }
   await waitFor(
     () =>
       client.evaluate(
-        'document.querySelector("#statusText").textContent.includes("Image could not be loaded")',
+        'document.readyState === "complete" && document.title === "Database seed"',
       ),
-    "the failed image switch",
+    "the legacy migration rollback seed page",
   );
-  assert.deepEqual(await readBusinessState(client), beforeFailedImageSwitch);
-  assert.deepEqual(await readStoredState(client), storedBeforeFailedImageSwitch);
-  await client.evaluate(`(() => {
-    const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-    payload.imageSet.currentImagePath = payload.images[2].relativePath;
-    payload.images[2] = {
-      ...payload.images[2],
-      status: "skipped",
-      contours: [],
-      updatedAt: new Date().toISOString(),
-    };
-    const transfer = new DataTransfer();
-    transfer.items.add(new File(
-      [JSON.stringify(payload)],
-      "corrupt-target.face-contour-annotations.json",
-      { type: "application/json" },
-    ));
-    const input = document.querySelector("#annotationFileInput");
-    input.files = transfer.files;
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  })()`);
+  const rollbackLegacySeed = await seedLegacyV3Project(client);
+  assert.equal(rollbackLegacySeed.databaseVersion, 3);
+  assert.equal(rollbackLegacySeed.projectKey, "current-project");
+  assert.equal(rollbackLegacySeed.imageId, LEGACY_IMAGE_ID);
+
+  const { identifier: legacyMigrationFailureScriptId } = await client.send(
+    "Page.addScriptToEvaluateOnNewDocument",
+    {
+      source: `(() => {
+        const descriptor = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "add");
+        window.__legacyMigrationAddDescriptor = descriptor;
+        window.__legacyMigrationAddFailureCount = 0;
+        Object.defineProperty(IDBObjectStore.prototype, "add", {
+          ...descriptor,
+          value(value, key) {
+            if (
+              window.__legacyMigrationAddFailureCount === 0 &&
+              this.name === "projects" &&
+              key !== "current-project"
+            ) {
+              window.__legacyMigrationAddFailureCount += 1;
+              throw new Error("Forced legacy metadata migration failure.");
+            }
+            return descriptor.value.call(this, value, key);
+          },
+        });
+      })();`,
+    },
+  );
+  const failedMigrationUrl = new URL(appUrl);
+  failedMigrationUrl.searchParams.set("legacy-migration-rollback", "1");
+  const failedMigrationNavigation = await client.send("Page.navigate", {
+    url: failedMigrationUrl.href,
+  });
+  if (failedMigrationNavigation.errorText) {
+    throw new Error(
+      "Forced legacy migration navigation failed: " + failedMigrationNavigation.errorText,
+    );
+  }
   await waitFor(
     () =>
       client.evaluate(
-        'document.querySelector("#statusText").textContent.includes("Stored source image could not be decoded")',
+        'document.readyState === "complete" && document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "0 projects" && document.querySelector("#hubStatusText").textContent.includes("Previous local work could not be migrated")',
       ),
-    "the corrupt-target annotation import failure",
+    "the forced legacy migration failure in the hub",
+    30_000,
   );
-  assert.deepEqual(await readBusinessState(client), beforeFailedImageSwitch);
-  assert.deepEqual(await readStoredState(client), storedBeforeFailedImageSwitch);
-  await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    await storage.putProjectImageAsset(window.__e2eOriginalTargetAsset);
-    delete window.__e2eOriginalTargetAsset;
-  })()`);
+  assert.deepEqual(await readStoredProjects(client), []);
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: 1,
+    records: 1,
+    assets: 1,
+  });
+  const failedMigrationRawState = await readRawProjectStorageEntry(client, {
+    localProjectKey: "missing-after-failed-migration",
+    imageId: LEGACY_IMAGE_ID,
+  });
+  assert.equal(failedMigrationRawState.databaseVersion, 4);
+  assert.equal(failedMigrationRawState.legacyMetadata.name, LEGACY_PROJECT_NAME);
+  assert.equal(failedMigrationRawState.legacyMetadata.images[0].id, LEGACY_IMAGE_ID);
+  assert.equal(failedMigrationRawState.metadata, null);
+  assert.equal(failedMigrationRawState.record.status, "needs_review");
+  assert.equal(failedMigrationRawState.record.contours[0].id, "legacy-face-outline");
+  assert.equal(failedMigrationRawState.asset.id, LEGACY_IMAGE_ID);
+  assert.match(failedMigrationRawState.asset.dataUrl, /^data:image\/jpeg;base64,/);
+  assert.deepEqual(failedMigrationRawState.projectKeys, ["current-project"]);
+  assert.deepEqual(failedMigrationRawState.recordKeys, [LEGACY_IMAGE_ID]);
+  assert.deepEqual(failedMigrationRawState.assetKeys, [LEGACY_IMAGE_ID]);
 
-  const dimensionMismatchSwitch = await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    const metadata = await storage.getCurrentProject();
-    const target = metadata.images[2];
-    const originalAsset = await storage.getProjectImageAsset(target.id);
-    const canvas = document.createElement("canvas");
-    canvas.width = target.width === 32 ? 33 : 32;
-    canvas.height = target.height === 32 ? 33 : 32;
-    await storage.putProjectImageAsset({
-      id: target.id,
-      dataUrl: canvas.toDataURL("image/png"),
-      updatedAt: new Date().toISOString(),
-    });
-    document.querySelectorAll("#imageQueueList .queue-item")[2].click();
-    return { originalAsset };
-  })()`);
-  await waitFor(
-    () =>
-      client.evaluate(
-        'document.querySelector("#statusText").textContent.includes("Stored source image dimensions no longer match")',
-      ),
-    "the dimension-mismatched image switch failure",
-  );
-  assert.deepEqual(await readBusinessState(client), beforeFailedImageSwitch);
-  assert.deepEqual(await readStoredState(client), storedBeforeFailedImageSwitch);
-  await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    await storage.putProjectImageAsset(${JSON.stringify(dimensionMismatchSwitch.originalAsset)});
-  })()`);
-
-  const dimensionMismatchRestore = await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    const metadata = await storage.getCurrentProject();
-    const current = metadata.images.find((image) => image.id === metadata.currentImageId);
-    const originalAsset = await storage.getProjectImageAsset(current.id);
-    const canvas = document.createElement("canvas");
-    canvas.width = current.width === 32 ? 33 : 32;
-    canvas.height = current.height === 32 ? 33 : 32;
-    await storage.putProjectImageAsset({
-      id: current.id,
-      dataUrl: canvas.toDataURL("image/png"),
-      updatedAt: new Date().toISOString(),
-    });
-    return { originalAsset };
-  })()`);
-  await reloadPage(client);
-  await waitFor(
-    () =>
-      client.evaluate(`(() =>
-        document.querySelector("#statusText").textContent.includes("Saved image set could not be restored") &&
-        document.querySelector("#jsonOutput").value === "No image set is open."
-      )()`),
-    "the dimension-mismatched refresh failure",
-  );
-  assert.deepEqual(await readStoredState(client), storedBeforeFailedImageSwitch);
-  await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    await storage.putProjectImageAsset(${JSON.stringify(dimensionMismatchRestore.originalAsset)});
-  })()`);
-  await reloadPage(client);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        try {
-          JSON.parse(document.querySelector("#jsonOutput").value);
-          return document.querySelector("#projectSaveState").dataset.state === "saved";
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the restored image set after repairing the mismatched asset",
-  );
-  assert.deepEqual(await readBusinessState(client), beforeFailedImageSwitch);
-  assert.deepEqual(await readStoredState(client), storedBeforeFailedImageSwitch);
-
-  const storedBeforeAutosaveFailure = await readStoredState(client);
-  await client.evaluate(`(() => {
-    const descriptor = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "put");
-    window.__e2eAutosavePutDescriptor = descriptor;
-    window.__e2eAutosaveFailureCount = 0;
-    Object.defineProperty(IDBObjectStore.prototype, "put", {
-      ...descriptor,
-      value(value, key) {
-        if (
-          window.__e2eAutosaveFailureCount === 0 &&
-          this.name === "project-images" &&
-          value?.status === "done"
-        ) {
-          window.__e2eAutosaveFailureCount += 1;
-          throw new Error("Forced production autosave failure.");
-        }
-        return descriptor.value.call(this, value, key);
-      },
-    });
-    document.querySelector("#markDoneButton").click();
-  })()`);
-  await waitFor(
-    () =>
-      client.evaluate(`(() =>
-        document.querySelector("#projectSaveState").dataset.state === "failed" &&
-        document.querySelector("#statusText").textContent.includes("Local save failed")
-      )()`),
-    "the production autosave failure",
-  );
-  const autosaveFailureEvidence = await client.evaluate(`(() => {
-    const unloadEvent = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(unloadEvent);
-    const evidence = {
-      failureCount: window.__e2eAutosaveFailureCount,
-      unloadPrevented: unloadEvent.defaultPrevented,
-    };
+  await client.send("Page.removeScriptToEvaluateOnNewDocument", {
+    identifier: legacyMigrationFailureScriptId,
+  });
+  const legacyMigrationAddFailureCount = await client.evaluate(`(() => {
+    const count = window.__legacyMigrationAddFailureCount;
     Object.defineProperty(
       IDBObjectStore.prototype,
-      "put",
-      window.__e2eAutosavePutDescriptor,
+      "add",
+      window.__legacyMigrationAddDescriptor
     );
-    delete window.__e2eAutosavePutDescriptor;
-    return evidence;
+    delete window.__legacyMigrationAddDescriptor;
+    return count;
   })()`);
-  assert.deepEqual(autosaveFailureEvidence, {
-    failureCount: 1,
-    unloadPrevented: true,
+  assert.equal(legacyMigrationAddFailureCount, 1);
+
+  await reloadPage(client);
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "1 project" && document.querySelector("#hubStatusText").textContent.includes("Recovered the previous image set")',
+      ),
+    "the legacy migration retry",
+    30_000,
+  );
+  const retriedMigrationProjects = await readStoredProjects(client);
+  assert.equal(retriedMigrationProjects.length, 1);
+  const [retriedMigrationProject] = retriedMigrationProjects;
+  assert.equal(retriedMigrationProject.name, LEGACY_PROJECT_NAME);
+  assert.notEqual(retriedMigrationProject.localProjectKey, "current-project");
+  const retriedMigrationRawState = await readRawProjectStorageEntry(client, {
+    localProjectKey: retriedMigrationProject.localProjectKey,
+    imageId: LEGACY_IMAGE_ID,
   });
-  assert.deepEqual(await readStoredState(client), storedBeforeAutosaveFailure);
+  assert.equal(retriedMigrationRawState.legacyMetadata, null);
+  assert.equal(
+    retriedMigrationRawState.metadata.localProjectKey,
+    retriedMigrationProject.localProjectKey,
+  );
+  assert.equal(retriedMigrationRawState.record.status, "needs_review");
+  assert.equal(retriedMigrationRawState.asset.id, LEGACY_IMAGE_ID);
+  assert.deepEqual(retriedMigrationRawState.projectKeys, [
+    retriedMigrationProject.localProjectKey,
+  ]);
+  assert.deepEqual(retriedMigrationRawState.recordKeys, [LEGACY_IMAGE_ID]);
+  assert.deepEqual(retriedMigrationRawState.assetKeys, [LEGACY_IMAGE_ID]);
 
   await client.evaluate("window.confirm = () => true");
+  await clickProjectCardAction(client, LEGACY_PROJECT_NAME, ".delete-project-button");
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectLibraryCount").textContent.trim() === "0 projects" && document.querySelector("#hubStatusText").textContent.includes("Deleted the local copy")',
+      ),
+    "the retried legacy migration cleanup",
+    30_000,
+  );
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: 0,
+    records: 0,
+    assets: 0,
+  });
+
+  await reloadPage(client);
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "0 projects" && document.querySelector("#hubStatusText").textContent.includes("Choose a project")',
+      ),
+    "the empty project hub after legacy migration verification",
+    30_000,
+  );
+
+  const emptyHub = await readHubState(client);
+  assert.deepEqual(emptyHub, {
+    hubVisible: true,
+    workspaceHidden: true,
+    countLabel: "0 projects",
+    emptyVisible: true,
+    names: [],
+    progress: [],
+    status: "Choose a project to continue.",
+    hash: "",
+  });
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: 0,
+    records: 0,
+    assets: 0,
+  });
+
   await client.setFiles("#zipInput", [ZIP_FIXTURE]);
   await waitFor(
     () =>
-      client.evaluate(`(() => {
-        const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-        return payload.images.every((image) => image.status === "unlabeled") &&
-          document.querySelector("#projectSaveState").dataset.state === "saved";
-      })()`),
-    "the fresh image set after autosave recovery",
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "image-set" && document.querySelector("#projectSaveState").dataset.state === "saved" && payload.images.length === 3 && window.location.hash.startsWith("#/project/"); } catch (error) { return false; } })()',
+      ),
+    "project A to be created",
     45_000,
   );
 
-  await client.evaluate('document.querySelector("#markDoneButton").click()');
+  const projectAHash = await client.evaluate("window.location.hash");
+  assert.match(projectAHash, /^#\/project\/[^/]+$/);
+  const projectAKey = decodeURIComponent(projectAHash.slice("#/project/".length));
+  assert.notEqual(projectAKey, "");
+  const openedA = await readBusinessState(client);
+  assert.equal(openedA.name, "image-set");
+  assert.equal(openedA.position, "1 / 3");
+  assert.deepEqual(openedA.paths, EXPECTED_PATHS);
+  assert.deepEqual(openedA.statuses, ["unlabeled", "unlabeled", "unlabeled"]);
+  const focusedWorkspaceVisibility = await client.evaluate(`(() => {
+    const rectCount = (id) => document.querySelector("#" + id).getClientRects().length;
+    const sourceControls = [
+      "openImageButton",
+      "openFolderButton",
+      "openZipButton",
+      "imageInput",
+      "folderInput",
+      "zipInput",
+    ];
+    const annotationControls = [
+      "exitProjectButton",
+      "needsReviewButton",
+      "labelGrid",
+      "imageQueueDisclosure",
+      "annotationCanvas",
+      "importAnnotationsButton",
+      "exportAnnotationsButton",
+    ];
+    return {
+      sourceRectCounts: Object.fromEntries(
+        sourceControls.map((id) => [id, rectCount(id)])
+      ),
+      annotationRectCounts: Object.fromEntries(
+        annotationControls.map((id) => [id, rectCount(id)])
+      ),
+    };
+  })()`);
+  assert.equal(
+    Object.values(focusedWorkspaceVisibility.sourceRectCounts).every((count) => count === 0),
+    true,
+  );
+  assert.equal(
+    Object.values(focusedWorkspaceVisibility.annotationRectCounts).every((count) => count > 0),
+    true,
+  );
+
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    mobile: true,
+  });
+  await waitFor(
+    () => client.evaluate("window.innerWidth === 390 && window.innerHeight === 844"),
+    "the 390 by 844 workspace viewport",
+  );
+  const mobileScrollPlan = await client.evaluate(`(() => {
+    const sidebar = document.querySelector(".sidebar");
+    const header = document.querySelector(".workspace-project-header");
+    const maximumScroll = document.documentElement.scrollHeight - window.innerHeight;
+    const maximumStickyScroll =
+      sidebar.offsetTop + sidebar.offsetHeight - header.offsetHeight - 1;
+    const targetScroll = Math.max(
+      1,
+      Math.min(
+        Math.floor(maximumScroll / 2),
+        Math.floor(maximumStickyScroll / 2),
+      ),
+    );
+    window.scrollTo(0, targetScroll);
+    return { maximumScroll, maximumStickyScroll, targetScroll };
+  })()`);
   await waitFor(
     () =>
-      client.evaluate(`(() => {
-        const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-        return payload.images[0].status === "done" &&
-          document.querySelector("#projectSaveState").dataset.state === "saved";
-      })()`),
-    "the first image status save",
+      client.evaluate(
+        `Math.abs(window.scrollY - ${JSON.stringify(mobileScrollPlan.targetScroll)}) <= 1`,
+      ),
+    "the mobile workspace to scroll",
   );
-  await client.evaluate('document.querySelector("#nextImageButton").click()');
+  assert.equal(mobileScrollPlan.maximumScroll > 0, true);
+  assert.equal(mobileScrollPlan.maximumStickyScroll > 0, true);
+  const mobileWorkspaceEvidence = await client.evaluate(`(() => {
+    const header = document.querySelector(".workspace-project-header");
+    const exitButton = document.querySelector("#exitProjectButton");
+    const headerBounds = header.getBoundingClientRect();
+    const exitBounds = exitButton.getBoundingClientRect();
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      scrollY: window.scrollY,
+      headerTop: headerBounds.top,
+      exitTop: exitBounds.top,
+      exitBottom: exitBounds.bottom,
+      exitDisplay: getComputedStyle(exitButton).display,
+      horizontalOverflow:
+        document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    };
+  })()`);
+  assert.equal(mobileWorkspaceEvidence.viewportWidth, 390);
+  assert.equal(mobileWorkspaceEvidence.viewportHeight, 844);
+  assert.equal(mobileWorkspaceEvidence.scrollY > 0, true);
+  assert.equal(Math.abs(mobileWorkspaceEvidence.headerTop) <= 1, true);
+  assert.notEqual(mobileWorkspaceEvidence.exitDisplay, "none");
+  assert.equal(mobileWorkspaceEvidence.exitTop >= 0, true);
+  assert.equal(
+    mobileWorkspaceEvidence.exitBottom <= mobileWorkspaceEvidence.viewportHeight,
+    true,
+  );
+  assert.equal(mobileWorkspaceEvidence.horizontalOverflow, false);
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await client.evaluate("window.scrollTo(0, 0)");
   await waitFor(
-    () => client.evaluate('document.querySelector("#projectPosition").textContent === "2 / 3"'),
-    "the second image",
+    () => client.evaluate("window.innerWidth === 1440 && window.scrollY === 0"),
+    "the restored desktop workspace viewport",
   );
+
   await client.evaluate('document.querySelector("#needsReviewButton").click()');
   await waitFor(
     () =>
-      client.evaluate(`(() => {
-        const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-        return payload.images[1].status === "needs_review" &&
-          document.querySelector("#projectSaveState").dataset.state === "saved";
-      })()`),
-    "the second image status save",
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return payload.images[0].status === "needs_review" && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
+      ),
+    "project A annotation status to save",
   );
+  const storedAAfterSave = await readStoredState(client, projectAKey);
+  assert.equal(storedAAfterSave.metadata.localProjectKey, projectAKey);
+  assert.equal(storedAAfterSave.records[0].status, "needs_review");
+  assert.equal(storedAAfterSave.assetIds.every(Boolean), true);
 
-  const nativePreview = await client.evaluate(`(() => {
-    const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-    const serialized = JSON.stringify(payload);
-    return {
-      kind: payload.kind,
-      schemaVersion: payload.schemaVersion,
-      paths: payload.images.map((image) => image.relativePath),
-      statuses: payload.images.map((image) => image.status),
-      currentImagePath: payload.imageSet.currentImagePath,
-      progress: payload.progress,
-      hasTopLevelId: Object.hasOwn(payload, "id") || Object.hasOwn(payload, "projectId"),
-      hasImageId: payload.images.some((image) => Object.hasOwn(image, "id")),
-      hasEmbeddedImage: /data:image|dataUrl|contentHash|sha-?256/i.test(serialized),
-      hasLocalWriteToken: serialized.includes("localWriteToken"),
-      hasAbsoluteWindowsPath: /[A-Za-z]:[\\/]/.test(serialized),
-    };
-  })()`);
-  assert.equal(nativePreview.kind, "face-contour-annotations");
-  assert.equal(nativePreview.schemaVersion, 1);
-  assert.deepEqual(nativePreview.paths, EXPECTED_PATHS);
-  assert.deepEqual(nativePreview.statuses, ["done", "needs_review", "unlabeled"]);
-  assert.equal(nativePreview.currentImagePath, EXPECTED_PATHS[1]);
-  assert.deepEqual(nativePreview.progress, {
-    total: 3,
-    done: 1,
-    skipped: 0,
-    needs_review: 1,
-    in_progress: 0,
-    unlabeled: 1,
-  });
-  assert.equal(nativePreview.hasTopLevelId, false);
-  assert.equal(nativePreview.hasImageId, false);
-  assert.equal(nativePreview.hasEmbeddedImage, false);
-  assert.equal(nativePreview.hasLocalWriteToken, false);
-  assert.equal(nativePreview.hasAbsoluteWindowsPath, false);
+  await reloadPage(client);
+  await waitFor(
+    () =>
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "image-set" && payload.images[0].status === "needs_review" && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
+      ),
+    "project A after a hash-preserving refresh",
+    30_000,
+  );
+  assert.equal(await client.evaluate("window.location.hash"), projectAHash);
 
   await client.send("Page.setDownloadBehavior", {
     behavior: "allow",
@@ -994,534 +1151,739 @@ try {
   await client.evaluate('document.querySelector("#exportAnnotationsButton").click()');
   const downloadedAnnotationPath = await waitFor(() => {
     const files = readdirSync(downloadDirectory).filter(
-      (name) => name.endsWith(".face-contour-annotations.json") && !name.endsWith(".crdownload"),
+      (name) =>
+        name.endsWith(".face-contour-annotations.json") &&
+        !name.endsWith(".crdownload"),
     );
     return files.length === 1 ? join(downloadDirectory, files[0]) : null;
-  }, "the annotation JSON download");
-  const downloadedAnnotations = JSON.parse(readFileSync(downloadedAnnotationPath, "utf8"));
+  }, "project A annotation export");
+  const downloadedAnnotations = JSON.parse(
+    readFileSync(downloadedAnnotationPath, "utf8"),
+  );
+  const serializedAnnotations = JSON.stringify(downloadedAnnotations);
   assert.equal(downloadedAnnotations.kind, "face-contour-annotations");
   assert.deepEqual(
     downloadedAnnotations.images.map((image) => image.relativePath),
     EXPECTED_PATHS,
   );
-  assert.equal(JSON.stringify(downloadedAnnotations).includes("data:image"), false);
+  assert.equal(downloadedAnnotations.images[0].status, "needs_review");
+  [
+    "localProjectKey",
+    "localWriteToken",
+    "projectId",
+    "data:image",
+    projectAKey,
+    storedAAfterSave.metadata.localWriteToken,
+    ...storedAAfterSave.metadata.images.map((image) => image.id),
+  ].forEach((forbidden) => {
+    assert.equal(serializedAnnotations.includes(forbidden), false, forbidden);
+  });
 
-  await reloadPage(client);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return document.querySelector("#projectSaveState").dataset.state === "saved" &&
-            payload.images[0].status === "done" &&
-            payload.images[1].status === "needs_review" &&
-            payload.imageSet.currentImagePath === ${JSON.stringify(EXPECTED_PATHS[1])};
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the saved image set after refresh",
-    30_000,
+  await client.evaluate(
+    '(() => { window.__annotationConfirmMessages = []; window.confirm = (message) => { window.__annotationConfirmMessages.push(String(message)); return true; }; })()',
   );
-  const restored = await readBusinessState(client);
-  assert.deepEqual(restored.paths, EXPECTED_PATHS);
-  assert.deepEqual(restored.statuses, ["done", "needs_review", "unlabeled"]);
-  assert.equal(restored.position, "2 / 3");
-
-  const beforeCancelledImport = await readBusinessState(client);
-  const storedBeforeCancelledImport = await readStoredState(client);
-  await client.evaluate(`(() => {
-    window.__confirmMessages = [];
-    window.confirm = (message) => {
-      window.__confirmMessages.push(String(message));
-      return false;
-    };
-  })()`);
   await client.setFiles("#annotationFileInput", [PARTIAL_ANNOTATIONS_FIXTURE]);
   await waitFor(
     () =>
       client.evaluate(
-        'document.querySelector("#statusText").textContent.includes("Annotation import cancelled")',
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return payload.images[0].status === "skipped" && document.querySelector("#statusText").textContent.includes("1 image updated") && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
       ),
-    "the cancelled annotation import",
-  );
-  assert.equal(await client.evaluate("window.__confirmMessages.length"), 1);
-  assert.deepEqual(await readBusinessState(client), beforeCancelledImport);
-  assert.deepEqual(await readStoredState(client), storedBeforeCancelledImport);
-
-  await client.evaluate(`(() => {
-    window.__confirmMessages = [];
-    window.confirm = (message) => {
-      window.__confirmMessages.push(String(message));
-      return true;
-    };
-  })()`);
-  await client.setFiles("#annotationFileInput", [PARTIAL_ANNOTATIONS_FIXTURE]);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        const report = document.querySelector("#annotationImportReport");
-        const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-        return !report.hidden &&
-          document.querySelector("#annotationImportSummary").textContent === "1 applied · 1 unmatched · 1 conflicts" &&
-          payload.images[0].status === "skipped" &&
-          payload.images[1].status === "needs_review" &&
-          document.querySelector("#projectSaveState").dataset.state === "saved";
-      })()`),
-    "the partial annotation import",
+    "project A annotation import",
     30_000,
   );
-  const importResult = await client.evaluate(`(() => ({
-    confirmMessages: window.__confirmMessages,
-    issueText: document.querySelector("#annotationImportIssues").textContent,
-    reportOpenable: !document.querySelector("#annotationImportReport").hidden,
-  }))()`);
-  assert.equal(importResult.confirmMessages.length, 1);
-  assert.match(importResult.confirmMessages[0], /replace existing work on 1 matching image/i);
-  assert.match(importResult.issueText, /Unmatched: faces\/missing\.jpg/);
-  assert.match(importResult.issueText, /Conflict: faces\/10-run-asset-type-samples\.png/);
-  assert.equal(importResult.reportOpenable, true);
-  const partialState = await readBusinessState(client);
-  assert.deepEqual(partialState.statuses, ["skipped", "needs_review", "unlabeled"]);
-  assert.equal(partialState.contourCounts[0], 0);
-  assert.equal(partialState.currentImagePath, EXPECTED_PATHS[0]);
-  assert.equal(partialState.position, "1 / 3");
-
-  await reloadPage(client);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return payload.images[0].status === "skipped" &&
-            payload.images[1].status === "needs_review" &&
-            payload.imageSet.currentImagePath === ${JSON.stringify(EXPECTED_PATHS[0])} &&
-            document.querySelector("#projectSaveState").dataset.state === "saved";
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the imported annotations after refresh",
-    30_000,
+  const importEvidence = await client.evaluate(
+    '(() => ({ confirmMessages: window.__annotationConfirmMessages, summary: document.querySelector("#annotationImportSummary").textContent.trim(), preview: document.querySelector("#jsonOutput").value }))()',
   );
+  assert.equal(importEvidence.confirmMessages.length, 1);
+  assert.match(importEvidence.confirmMessages[0], /replace existing work on 1 matching image/i);
+  assert.equal(importEvidence.summary, "1 applied · 1 unmatched · 1 conflicts");
+  assert.equal(importEvidence.preview.includes("localProjectKey"), false);
+  const storedABeforeFailedAutosave = await readStoredState(client, projectAKey);
+  assert.equal(storedABeforeFailedAutosave.records[0].status, "skipped");
 
-  const beforeCancelledReplacement = await readBusinessState(client);
-  const storedBeforeCancelledReplacement = await readStoredState(client);
-  await client.evaluate(`(() => {
-    window.__confirmMessages = [];
-    window.confirm = (message) => {
-      window.__confirmMessages.push(String(message));
-      return false;
-    };
-    const transfer = new DataTransfer();
-    transfer.items.add(new File([new Uint8Array([0])], "cancelled-replacement.jpg", {
-      type: "image/jpeg",
-      lastModified: 0,
-    }));
-    const imageInput = document.querySelector("#imageInput");
-    imageInput.files = transfer.files;
-    imageInput.dispatchEvent(new Event("change", { bubbles: true }));
-  })()`);
-  await waitFor(
-    () =>
-      client.evaluate(
-        'document.querySelector("#statusText").textContent.includes("Opening another image set was cancelled")',
-      ),
-    "the cancelled image-set replacement",
-  );
-  assert.equal(await client.evaluate("window.__confirmMessages.length"), 1);
-  assert.deepEqual(await readBusinessState(client), beforeCancelledReplacement);
-  assert.deepEqual(await readStoredState(client), storedBeforeCancelledReplacement);
-
-  await client.evaluate(`(() => {
-    window.__confirmMessages = [];
-    window.confirm = (message) => {
-      window.__confirmMessages.push(String(message));
-      return true;
-    };
-  })()`);
-  const beforeBrokenZip = await readBusinessState(client);
-  await client.setFiles("#zipInput", [BROKEN_ZIP_FIXTURE]);
-  await waitFor(
-    () =>
-      client.evaluate(
-        '/ZIP could not be read|corrupt|encrypted|unsupported|central directory|ZIP structure/i.test(document.querySelector("#statusText").textContent)',
-      ),
-    "the broken ZIP error",
-  );
-  const afterBrokenZip = await readBusinessState(client);
-  assert.deepEqual(afterBrokenZip, beforeBrokenZip);
-  assert.equal(await client.evaluate("window.__confirmMessages.length"), 1);
-
-  await reloadPage(client);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return payload.images[0].status === "skipped" &&
-            payload.images[1].status === "needs_review" &&
-            document.querySelector("#projectSaveState").dataset.state === "saved";
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the preserved set after the broken ZIP and refresh",
-    30_000,
-  );
-
-  const storedBeforeFailure = await readStoredState(client);
-  const visibleBeforeFailure = await readBusinessState(client);
   await client.evaluate(`(() => {
     const descriptor = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "put");
-    window.__e2eOriginalPutDescriptor = descriptor;
-    window.__e2ePutFailureCount = 0;
+    window.__autosavePutDescriptor = descriptor;
+    window.__autosavePutFailureCount = 0;
     Object.defineProperty(IDBObjectStore.prototype, "put", {
       ...descriptor,
       value(value, key) {
         if (
-          window.__e2ePutFailureCount === 0 &&
-          this.name === "project-images" &&
-          value?.status === "done"
+          window.__autosavePutFailureCount === 0 &&
+          this.name === "project-images"
         ) {
-          window.__e2ePutFailureCount += 1;
-          throw new Error("Forced annotation import transaction failure.");
+          window.__autosavePutFailureCount += 1;
+          throw new Error("Forced project image autosave failure.");
         }
         return descriptor.value.call(this, value, key);
+      },
+    });
+  })()`);
+  await client.evaluate('document.querySelector("#needsReviewButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return payload.images[0].status === "needs_review" && document.querySelector("#projectSaveState").dataset.state === "failed" && document.querySelector("#statusText").textContent.includes("Local save failed"); } catch (error) { return false; } })()',
+      ),
+    "the forced project A autosave failure",
+    30_000,
+  );
+  const autosavePutFailureCount = await client.evaluate(`(() => {
+    const count = window.__autosavePutFailureCount;
+    Object.defineProperty(
+      IDBObjectStore.prototype,
+      "put",
+      window.__autosavePutDescriptor
+    );
+    delete window.__autosavePutDescriptor;
+    return count;
+  })()`);
+  assert.equal(autosavePutFailureCount, 1);
+  assert.deepEqual(await readStoredState(client, projectAKey), storedABeforeFailedAutosave);
+  await client.evaluate(`(() => {
+    window.__failedExitConfirmMessages = [];
+    window.__allowFailedExit = false;
+    window.confirm = (message) => {
+      window.__failedExitConfirmMessages.push(String(message));
+      return window.__allowFailedExit;
+    };
+  })()`);
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#statusText").textContent.includes("Exit cancelled") && document.querySelector("#exitProjectButton").disabled === false',
+      ),
+    "project A to remain open after cancelling the failed-save exit",
+  );
+  assert.equal(await client.evaluate("window.location.hash"), projectAHash);
+  assert.equal(
+    await client.evaluate(
+      'JSON.parse(document.querySelector("#jsonOutput").value).images[0].status',
+    ),
+    "needs_review",
+  );
+  assert.deepEqual(await readStoredState(client, projectAKey), storedABeforeFailedAutosave);
+  const cancelledFailedExitMessages = await client.evaluate(
+    "window.__failedExitConfirmMessages",
+  );
+  assert.equal(cancelledFailedExitMessages.length, 1);
+  assert.match(cancelledFailedExitMessages[0], /not saved.*Exit anyway.*abandon/i);
+
+  await client.evaluate("window.__allowFailedExit = true");
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "1 project" && document.querySelector("#hubStatusText").textContent.includes("Exited without the unsaved in-memory changes") && window.location.hash === ""',
+      ),
+    "project A to explicitly abandon the failed autosave and exit",
+  );
+  const abandonedFailedExitMessages = await client.evaluate(
+    "window.__failedExitConfirmMessages",
+  );
+  assert.equal(abandonedFailedExitMessages.length, 2);
+  assert.deepEqual(await readStoredState(client, projectAKey), storedABeforeFailedAutosave);
+  const hubAfterA = await readHubState(client);
+  assert.deepEqual(hubAfterA.names, ["image-set"]);
+  assert.match(hubAfterA.progress[0], /1 skipped/);
+  assert.equal(hubAfterA.workspaceHidden, true);
+
+  await client.setFiles("#zipInput", [boundedWorkerZip]);
+  await waitFor(
+    () =>
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "bounded-workers" && payload.images.length === 8 && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
+      ),
+    "project B to be created",
+    60_000,
+  );
+  const projectBHash = await client.evaluate("window.location.hash");
+  const projectBKey = decodeURIComponent(projectBHash.slice("#/project/".length));
+  assert.notEqual(projectBKey, projectAKey);
+  await client.evaluate('document.querySelector("#needsReviewButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return payload.images[0].status === "needs_review" && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
+      ),
+    "project B annotation status to save",
+  );
+
+  const storedAWhileBIsOpen = await readStoredState(client, projectAKey);
+  const storedB = await readStoredState(client, projectBKey);
+  assert.equal(storedAWhileBIsOpen.records[0].status, "skipped");
+  assert.equal(storedAWhileBIsOpen.records.length, 3);
+  assert.equal(storedB.records[0].status, "needs_review");
+  assert.equal(storedB.records.length, 8);
+  const projectBImageId = storedB.metadata.images[0].id;
+  const staleDeletedProjectSetup = await client.evaluate(`(async () => {
+    const storage = await import("/src/storage.js?v=browser-stale-deleted-project-setup");
+    const project = await storage.getLocalProject(${JSON.stringify(projectBKey)});
+    const imageId = project.images[0].id;
+    const record = await storage.getLocalProjectImageRecord(project.localProjectKey, imageId);
+    const asset = await storage.getLocalProjectImageAsset(project.localProjectKey, imageId);
+    window.__staleDeletedProject = structuredClone(project);
+    window.__staleDeletedImage = {
+      ...structuredClone(record),
+      dataUrl: asset.dataUrl,
+      status: "skipped",
+      updatedAt: new Date().toISOString(),
+    };
+    return {
+      imageId,
+      localProjectKey: project.localProjectKey,
+      localWriteToken: project.localWriteToken,
+      hasDataUrl: window.__staleDeletedImage.dataUrl.startsWith("data:image/"),
+    };
+  })()`);
+  assert.equal(staleDeletedProjectSetup.imageId, projectBImageId);
+  assert.equal(staleDeletedProjectSetup.localProjectKey, projectBKey);
+  assert.equal(staleDeletedProjectSetup.localWriteToken, storedB.metadata.localWriteToken);
+  assert.equal(staleDeletedProjectSetup.hasDataUrl, true);
+
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "2 projects"',
+      ),
+    "both projects in the hub",
+  );
+  const twoProjectHub = await readHubState(client);
+  assert.deepEqual(new Set(twoProjectHub.names), new Set(["image-set", "bounded-workers"]));
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: 2,
+    records: 11,
+    assets: 11,
+  });
+
+  const countsBeforeFailedCreate = await readProjectStoreCounts(client);
+  await client.evaluate(
+    '(() => { const descriptor = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "add"); window.__projectCreateAddDescriptor = descriptor; window.__projectCreateFailureCount = 0; Object.defineProperty(IDBObjectStore.prototype, "add", { ...descriptor, value(value, key) { if (window.__projectCreateFailureCount === 0 && this.name === "project-image-assets") { window.__projectCreateFailureCount += 1; throw new Error("Forced local project creation failure."); } return descriptor.value.call(this, value, key); } }); })()',
+  );
+  await client.setFiles("#imageInput", [SOURCE_REPLACEMENT_IMAGE]);
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#hubStatusText").textContent.includes("Forced local project creation failure")',
+      ),
+    "the atomic project creation failure",
+    30_000,
+  );
+  const creationFailureCount = await client.evaluate(
+    '(() => { const count = window.__projectCreateFailureCount; Object.defineProperty(IDBObjectStore.prototype, "add", window.__projectCreateAddDescriptor); delete window.__projectCreateAddDescriptor; return count; })()',
+  );
+  assert.equal(creationFailureCount, 1);
+  assert.deepEqual(await readProjectStoreCounts(client), countsBeforeFailedCreate);
+  assert.deepEqual(
+    new Set((await readStoredProjects(client)).map((project) => project.name)),
+    new Set(["image-set", "bounded-workers"]),
+  );
+  assert.equal((await readHubState(client)).countLabel, "2 projects");
+
+  await clickProjectCardAction(client, "image-set", ".open-project-button");
+  await waitFor(
+    () =>
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#projectName").textContent === "image-set" && payload.images.length === 3 && payload.images[0].status === "skipped"; } catch (error) { return false; } })()',
+      ),
+    "project A to reopen",
+    30_000,
+  );
+  assert.equal(await client.evaluate("window.location.hash"), projectAHash);
+  assert.equal((await readStoredState(client, projectBKey)).records[0].status, "needs_review");
+
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "2 projects"',
+      ),
+    "the hub before deletion",
+  );
+
+  await client.evaluate(
+    '(() => { window.__deleteConfirmMessages = []; window.confirm = (message) => { window.__deleteConfirmMessages.push(String(message)); return false; }; })()',
+  );
+  await clickProjectCardAction(client, "bounded-workers", ".delete-project-button");
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#hubStatusText").textContent.includes("Project deletion cancelled")',
+      ),
+    "project B deletion cancellation",
+  );
+  assert.equal((await readHubState(client)).countLabel, "2 projects");
+  const deleteConfirmMessages = await client.evaluate("window.__deleteConfirmMessages");
+  assert.equal(deleteConfirmMessages.length, 1);
+  assert.match(deleteConfirmMessages[0], /Original files and exported JSON are not affected/i);
+  assert.notEqual(await readStoredState(client, projectBKey), null);
+
+  const countsBeforeDelete = await readProjectStoreCounts(client);
+  const storedABeforeFailedDelete = await readStoredState(client, projectAKey);
+  const storedBBeforeFailedDelete = await readStoredState(client, projectBKey);
+  const rawABeforeFailedDelete = await readRawProjectStorageEntry(client, {
+    localProjectKey: projectAKey,
+    imageId: storedABeforeFailedDelete.metadata.images[0].id,
+  });
+  const rawBBeforeFailedDelete = await readRawProjectStorageEntry(client, {
+    localProjectKey: projectBKey,
+    imageId: projectBImageId,
+  });
+  await client.evaluate(`(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "delete");
+    window.__projectDeleteDescriptor = descriptor;
+    window.__projectDeleteFailureCount = 0;
+    Object.defineProperty(IDBObjectStore.prototype, "delete", {
+      ...descriptor,
+      value(key) {
+        if (
+          window.__projectDeleteFailureCount === 0 &&
+          this.name === "project-image-assets" &&
+          key === ${JSON.stringify(projectBImageId)}
+        ) {
+          window.__projectDeleteFailureCount += 1;
+          throw new Error("Forced local project asset deletion failure.");
+        }
+        return descriptor.value.call(this, key);
       },
     });
     window.confirm = () => true;
   })()`);
-  await client.setFiles("#annotationFileInput", [ROLLBACK_ANNOTATIONS_FIXTURE]);
+  await clickProjectCardAction(client, "bounded-workers", ".delete-project-button");
   await waitFor(
     () =>
       client.evaluate(
-        'document.querySelector("#statusText").textContent.includes("Forced annotation import transaction failure")',
+        'document.querySelector("#hubStatusText").textContent.includes("Project could not be deleted. Its local copy was kept") && Array.from(document.querySelectorAll(".delete-project-button")).every((button) => button.disabled === false)',
       ),
-    "the forced annotation transaction failure",
+    "the rolled-back project B deletion failure",
     30_000,
   );
-  const failureWasInjected = await client.evaluate(`(() => {
-    const count = window.__e2ePutFailureCount;
+  const projectDeleteFailureCount = await client.evaluate(`(() => {
+    const count = window.__projectDeleteFailureCount;
     Object.defineProperty(
       IDBObjectStore.prototype,
-      "put",
-      window.__e2eOriginalPutDescriptor,
+      "delete",
+      window.__projectDeleteDescriptor
     );
-    delete window.__e2eOriginalPutDescriptor;
+    delete window.__projectDeleteDescriptor;
     return count;
   })()`);
-  assert.equal(failureWasInjected, 1);
-  const visibleAfterFailure = await readBusinessState(client);
-  const storedAfterFailure = await readStoredState(client);
-  assert.deepEqual(visibleAfterFailure, visibleBeforeFailure);
-  assert.deepEqual(storedAfterFailure, storedBeforeFailure);
-
-  await reloadPage(client);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return payload.images[0].status === "skipped" &&
-            payload.images[1].status === "needs_review" &&
-            payload.imageSet.currentImagePath === ${JSON.stringify(EXPECTED_PATHS[0])} &&
-            document.querySelector("#projectSaveState").dataset.state === "saved";
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the rolled-back annotations after refresh",
-    30_000,
+  assert.equal(projectDeleteFailureCount, 1);
+  assert.equal((await readHubState(client)).countLabel, "2 projects");
+  assert.deepEqual(
+    new Set((await readHubState(client)).names),
+    new Set(["image-set", "bounded-workers"]),
   );
-  const finalState = await readBusinessState(client);
-  assert.deepEqual(finalState, visibleBeforeFailure);
+  assert.deepEqual(await readProjectStoreCounts(client), countsBeforeDelete);
+  assert.deepEqual(await readStoredState(client, projectAKey), storedABeforeFailedDelete);
+  assert.deepEqual(await readStoredState(client, projectBKey), storedBBeforeFailedDelete);
+  assert.deepEqual(
+    await readRawProjectStorageEntry(client, {
+      localProjectKey: projectAKey,
+      imageId: storedABeforeFailedDelete.metadata.images[0].id,
+    }),
+    rawABeforeFailedDelete,
+  );
+  assert.deepEqual(
+    await readRawProjectStorageEntry(client, {
+      localProjectKey: projectBKey,
+      imageId: projectBImageId,
+    }),
+    rawBBeforeFailedDelete,
+  );
 
-  const replacementSetup = await client.evaluate(`(async () => {
-    const response = await fetch("/samples/face-lena.jpg", { cache: "no-store" });
-    const sourceBytes = await response.arrayBuffer();
-    const sourceFile = new File([sourceBytes], ${JSON.stringify(SOURCE_REPLACEMENT_IMAGE.split(/[\\/]/).at(-1))}, {
-      type: "image/jpeg",
-      lastModified: 0,
-    });
-    const transfer = new DataTransfer();
-    transfer.items.add(sourceFile);
-    const imageInput = document.querySelector("#imageInput");
-    imageInput.files = transfer.files;
-
-    const descriptor = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "put");
-    window.__e2eReplacementPutDescriptor = descriptor;
-    window.__e2eOldSetFlushCount = 0;
-    window.__e2eReplacementFailureCount = 0;
-    Object.defineProperty(IDBObjectStore.prototype, "put", {
-      ...descriptor,
-      value(value, key) {
-        const storeNames = this.transaction.objectStoreNames;
-        if (
-          this.name === "project-images" &&
-          storeNames.contains("projects") &&
-          !storeNames.contains("project-image-assets")
-        ) {
-          window.__e2eOldSetFlushCount += 1;
-        }
-        if (
-          window.__e2eReplacementFailureCount === 0 &&
-          this.name === "project-image-assets"
-        ) {
-          window.__e2eReplacementFailureCount += 1;
-          throw new Error("Forced image-set replacement transaction failure.");
-        }
-        return descriptor.value.call(this, value, key);
-      },
-    });
-    window.__confirmMessages = [];
-    window.confirm = (message) => {
-      window.__confirmMessages.push(String(message));
-      return true;
-    };
-
-    const showPoints = document.querySelector("#showPointsToggle");
-    showPoints.checked = true;
-    showPoints.dispatchEvent(new Event("change", { bubbles: true }));
-    const saveStateAtDispatch = document.querySelector("#projectSaveState").dataset.state;
-    imageInput.dispatchEvent(new Event("change", { bubbles: true }));
-    return {
-      saveStateAtDispatch,
-      showPointsAtDispatch: showPoints.checked,
-    };
-  })()`);
-  assert.deepEqual(replacementSetup, {
-    saveStateAtDispatch: "saving",
-    showPointsAtDispatch: true,
-  });
-  const pendingOldState = await readBusinessState(client);
-  assert.equal(pendingOldState.showPoints, true);
+  await client.evaluate("window.confirm = () => true");
+  await clickProjectCardAction(client, "bounded-workers", ".delete-project-button");
   await waitFor(
     () =>
       client.evaluate(
-        'document.querySelector("#statusText").textContent.includes("Forced image-set replacement transaction failure")',
+        'document.querySelector("#projectLibraryCount").textContent.trim() === "1 project" && document.querySelector("#hubStatusText").textContent.includes("Deleted the local copy of bounded-workers")',
       ),
-    "the forced image-set replacement transaction failure",
+    "project B deletion",
     30_000,
   );
-  const replacementFailureEvidence = await client.evaluate(`(() => {
-    const evidence = {
-      oldSetFlushCount: window.__e2eOldSetFlushCount,
-      replacementFailureCount: window.__e2eReplacementFailureCount,
-      confirmMessages: window.__confirmMessages,
+  const countsAfterDelete = await readProjectStoreCounts(client);
+  assert.deepEqual(countsAfterDelete, {
+    projects: countsBeforeDelete.projects - 1,
+    records: countsBeforeDelete.records - 8,
+    assets: countsBeforeDelete.assets - 8,
+  });
+  assert.equal(await readStoredState(client, projectBKey), null);
+  const staleDeletedWriteEvidence = await client.evaluate(`(async () => {
+    const storage = await import("/src/storage.js?v=browser-stale-deleted-project-write");
+    const captureErrorCode = async (write) => {
+      try {
+        await write();
+        return null;
+      } catch (error) {
+        return error?.code || null;
+      }
     };
-    Object.defineProperty(
-      IDBObjectStore.prototype,
-      "put",
-      window.__e2eReplacementPutDescriptor,
+    const snapshotErrorCode = await captureErrorCode(() =>
+      storage.putLocalProjectSnapshot({
+        project: window.__staleDeletedProject,
+        image: window.__staleDeletedImage,
+      })
     );
-    delete window.__e2eReplacementPutDescriptor;
-    return evidence;
-  })()`);
-  assert.equal(replacementFailureEvidence.oldSetFlushCount >= 1, true);
-  assert.equal(replacementFailureEvidence.replacementFailureCount, 1);
-  assert.equal(replacementFailureEvidence.confirmMessages.length, 1);
-  assert.match(replacementFailureEvidence.confirmMessages[0], /open a different image set/i);
-  const afterReplacementFailure = await readBusinessState(client);
-  assert.deepEqual(afterReplacementFailure, pendingOldState);
-  const storedAfterReplacementFailure = await readStoredState(client);
-  assert.equal(storedAfterReplacementFailure.metadata.name, "image-set");
-  assert.equal(storedAfterReplacementFailure.metadata.preferences.showPoints, true);
-  assert.deepEqual(
-    storedAfterReplacementFailure.records.map((record) => record.status),
-    ["skipped", "needs_review", "unlabeled"],
-  );
-
-  await reloadPage(client);
-  await waitFor(
-    () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return document.querySelector("#projectName").textContent === "image-set" &&
-            payload.images[0].status === "skipped" &&
-            payload.images[1].status === "needs_review" &&
-            payload.imageSet.currentImagePath === ${JSON.stringify(EXPECTED_PATHS[0])} &&
-            document.querySelector("#showPointsToggle").checked &&
-            document.querySelector("#projectSaveState").dataset.state === "saved";
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the old image set after failed replacement and refresh",
-    30_000,
-  );
-  const restoredAfterReplacementFailure = await readBusinessState(client);
-  assert.deepEqual(restoredAfterReplacementFailure, pendingOldState);
-
-  const localWriteSafetyEvidence = await client.evaluate(`(async () => {
-    const storage = await import("/src/storage.js?v=image-set-annotations-1");
-    const config = await import("/src/config.js?v=image-set-annotations-1");
-    const metadata = await storage.getCurrentProject();
-    const records = await storage.getProjectImageRecords(
-      metadata.images.map((image) => image.id),
-    );
-    const assets = await Promise.all(
-      metadata.images.map((image) => storage.getProjectImageAsset(image.id)),
-    );
-    const fullProject = {
-      ...metadata,
-      images: metadata.images.map((image, index) => ({
-        ...image,
-        ...records[index],
-        dataUrl: assets[index].dataUrl,
-      })),
-    };
-    const staleProject = structuredClone(fullProject);
-    const replacementProject = {
-      ...structuredClone(fullProject),
-      localWriteToken: crypto.randomUUID(),
-    };
-    await storage.replaceCurrentProjectData(replacementProject);
-    const staleImage = {
-      ...staleProject.images[0],
-      status: "done",
-      updatedAt: new Date().toISOString(),
-    };
-    staleProject.images[0] = staleImage;
-    let staleWriteCode = null;
-    try {
-      await storage.putProjectSnapshot({ project: staleProject, image: staleImage });
-    } catch (error) {
-      staleWriteCode = error.code || null;
-    }
-    const afterStaleMetadata = await storage.getCurrentProject();
-    const afterStaleRecord = await storage.getProjectImageRecord(staleImage.id);
-
-    const tokenlessExpectedProject = structuredClone(fullProject);
-    delete tokenlessExpectedProject.localWriteToken;
-    const staleMigrationProject = {
-      ...structuredClone(tokenlessExpectedProject),
-      localWriteToken: crypto.randomUUID(),
-    };
-    let staleMigrationCode = null;
-    try {
-      await storage.replaceCurrentProjectDataIfUnchanged({
-        expectedProject: tokenlessExpectedProject,
-        project: staleMigrationProject,
-      });
-    } catch (error) {
-      staleMigrationCode = error.code || null;
-    }
-    let staleTokenClaimCode = null;
-    try {
-      await storage.claimCurrentProjectWriteToken({
-        expectedProject: tokenlessExpectedProject,
-        project: staleMigrationProject,
-      });
-    } catch (error) {
-      staleTokenClaimCode = error.code || null;
-    }
-    const afterStaleMigrationMetadata = await storage.getCurrentProject();
-
-    const legacyProject = {
-      ...structuredClone(replacementProject),
-      localWriteToken: crypto.randomUUID(),
-    };
-    await storage.clearCurrentProjectData();
-    await new Promise((resolveWrite, rejectWrite) => {
-      const openRequest = indexedDB.open(config.DRAFT_DB_NAME, config.DRAFT_DB_VERSION);
-      openRequest.onerror = () => rejectWrite(openRequest.error);
-      openRequest.onsuccess = () => {
-        const database = openRequest.result;
-        const transaction = database.transaction(config.PROJECT_STORE_NAME, "readwrite");
-        transaction.objectStore(config.PROJECT_STORE_NAME).put(
-          legacyProject,
-          config.CURRENT_PROJECT_KEY,
-        );
-        transaction.oncomplete = () => {
-          database.close();
-          resolveWrite();
-        };
-        transaction.onerror = () => {
-          database.close();
-          rejectWrite(transaction.error);
-        };
-      };
-    });
-
-    const putDescriptor = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "put");
-    let legacyFailureCount = 0;
-    Object.defineProperty(IDBObjectStore.prototype, "put", {
-      ...putDescriptor,
-      value(value, key) {
-        if (legacyFailureCount === 0 && this.name === config.PROJECT_IMAGE_STORE_NAME) {
-          legacyFailureCount += 1;
-          throw new Error("Forced legacy migration transaction failure.");
-        }
-        return putDescriptor.value.call(this, value, key);
-      },
-    });
-    let legacyRejected = false;
-    try {
-      await storage.replaceCurrentProjectData(legacyProject);
-    } catch (error) {
-      legacyRejected = true;
-    } finally {
-      Object.defineProperty(IDBObjectStore.prototype, "put", putDescriptor);
-    }
-    const preservedLegacy = await storage.getCurrentProject();
-    const preservedRecords = await storage.getProjectImageRecords(
-      legacyProject.images.map((image) => image.id),
-    );
-    const preservedAssets = await Promise.all(
-      legacyProject.images.map((image) => storage.getProjectImageAsset(image.id)),
+    const assetErrorCode = await captureErrorCode(() =>
+      storage.putLocalProjectImageAsset({
+        project: window.__staleDeletedProject,
+        image: window.__staleDeletedImage,
+      })
     );
     return {
-      staleWriteCode,
-      replacementTokenPreserved:
-        afterStaleMetadata.localWriteToken === replacementProject.localWriteToken,
-      staleRecordDidNotOverwrite: afterStaleRecord.status === records[0].status,
-      staleMigrationCode,
-      staleTokenClaimCode,
-      staleMigrationDidNotOverwrite:
-        afterStaleMigrationMetadata.localWriteToken === replacementProject.localWriteToken,
-      legacyFailureCount,
-      legacyRejected,
-      legacyPayloadPreserved:
-        JSON.stringify(preservedLegacy) === JSON.stringify(legacyProject),
-      legacyRecordsStayedEmpty: preservedRecords.every((record) => record === null),
-      legacyAssetsStayedEmpty: preservedAssets.every((asset) => asset === null),
+      snapshotErrorCode,
+      assetErrorCode,
+      deletedProject: await storage.getLocalProject(
+        window.__staleDeletedProject.localProjectKey
+      ),
+      projects: (await storage.listLocalProjects()).map((project) => ({
+        localProjectKey: project.localProjectKey,
+        name: project.name,
+      })),
     };
   })()`);
-  assert.deepEqual(localWriteSafetyEvidence, {
-    staleWriteCode: "STALE_IMAGE_SET_WRITE",
-    replacementTokenPreserved: true,
-    staleRecordDidNotOverwrite: true,
-    staleMigrationCode: "STALE_IMAGE_SET_WRITE",
-    staleTokenClaimCode: "STALE_IMAGE_SET_WRITE",
-    staleMigrationDidNotOverwrite: true,
-    legacyFailureCount: 1,
-    legacyRejected: true,
-    legacyPayloadPreserved: true,
-    legacyRecordsStayedEmpty: true,
-    legacyAssetsStayedEmpty: true,
+  assert.equal(staleDeletedWriteEvidence.snapshotErrorCode, "LOCAL_PROJECT_DELETED");
+  assert.equal(staleDeletedWriteEvidence.assetErrorCode, "LOCAL_PROJECT_DELETED");
+  assert.equal(staleDeletedWriteEvidence.deletedProject, null);
+  assert.deepEqual(staleDeletedWriteEvidence.projects, [
+    { localProjectKey: projectAKey, name: "image-set" },
+  ]);
+  const deletedProjectBRawState = await readRawProjectStorageEntry(client, {
+    localProjectKey: projectBKey,
+    imageId: projectBImageId,
   });
+  assert.equal(deletedProjectBRawState.metadata, null);
+  assert.equal(deletedProjectBRawState.record, null);
+  assert.equal(deletedProjectBRawState.asset, null);
+  assert.deepEqual(await readProjectStoreCounts(client), countsAfterDelete);
+  const storedAAfterRejectedDeletedWrites = await readStoredState(client, projectAKey);
+  assert.equal(storedAAfterRejectedDeletedWrites.records.length, 3);
+  assert.equal(storedAAfterRejectedDeletedWrites.records[0].status, "skipped");
 
-  await reloadPage(client);
+  await clickProjectCardAction(client, "image-set", ".open-project-button");
   await waitFor(
     () =>
-      client.evaluate(`(() => {
-        try {
-          const payload = JSON.parse(document.querySelector("#jsonOutput").value);
-          return document.querySelector("#projectName").textContent === "image-set" &&
-            payload.images[0].status === "skipped" &&
-            payload.images[1].status === "needs_review" &&
-            document.querySelector("#projectSaveState").dataset.state === "saved";
-        } catch (error) {
-          return false;
-        }
-      })()`),
-    "the legacy image set after atomic migration recovery",
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#projectName").textContent === "image-set" && payload.images[0].status === "skipped"; } catch (error) { return false; } })()',
+      ),
+    "project A after project B deletion",
+  );
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && window.location.hash === ""',
+      ),
+    "the final project hub",
+  );
+
+  await client.evaluate('window.location.hash = "#/not-a-valid-route"');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && window.location.hash === "" && document.querySelector("#hubStatusText").textContent.includes("not valid")',
+      ),
+    "an invalid hash to fail closed to the hub",
+  );
+  const invalidRouteHub = await readHubState(client);
+  assert.equal(invalidRouteHub.countLabel, "1 project");
+  assert.deepEqual(invalidRouteHub.names, ["image-set"]);
+
+  const countsBeforeRouteGuardCreate = await readProjectStoreCounts(client);
+  await client.evaluate(`(() => {
+    const storageManager = navigator.storage;
+    window.__routeGuardEstimateHadOwn = Object.prototype.hasOwnProperty.call(
+      storageManager,
+      "estimate"
+    );
+    window.__routeGuardEstimateDescriptor = Object.getOwnPropertyDescriptor(
+      storageManager,
+      "estimate"
+    );
+    window.__routeGuardEstimateRequestCount = 0;
+    window.__routeGuardEstimateReleaseCount = 0;
+    window.__releaseRouteGuardEstimate = null;
+    Object.defineProperty(storageManager, "estimate", {
+      configurable: true,
+      writable: true,
+      value() {
+        window.__routeGuardEstimateRequestCount += 1;
+        return new Promise((resolveEstimate) => {
+          let released = false;
+          window.__releaseRouteGuardEstimate = () => {
+            if (released) {
+              return;
+            }
+            released = true;
+            window.__routeGuardEstimateReleaseCount += 1;
+            resolveEstimate({ usage: 0, quota: 1024 ** 4 });
+          };
+        });
+      },
+    });
+  })()`);
+  await client.setFiles("#imageInput", [SOURCE_REPLACEMENT_IMAGE]);
+  await waitFor(
+    () =>
+      client.evaluate(
+        'window.__routeGuardEstimateRequestCount === 1 && typeof window.__releaseRouteGuardEstimate === "function" && Array.from(document.querySelectorAll(".project-card button")).every((button) => button.disabled)',
+      ),
+    "the new project import to pause at its storage estimate",
+  );
+  assert.deepEqual(await readProjectStoreCounts(client), countsBeforeRouteGuardCreate);
+  await client.evaluate(`(() => {
+    window.__routeGuardHashChangeCount = 0;
+    window.__routeGuardHashChangeHandler = () => {
+      window.__routeGuardHashChangeCount += 1;
+    };
+    window.addEventListener("hashchange", window.__routeGuardHashChangeHandler);
+    window.location.hash = ${JSON.stringify(projectAHash)};
+  })()`);
+  await waitFor(
+    () =>
+      client.evaluate(
+        `window.location.hash === ${JSON.stringify(projectAHash)} && window.__routeGuardHashChangeCount >= 1`,
+      ),
+    "project A navigation while project creation is paused",
+  );
+  await client.evaluate("window.__releaseRouteGuardEstimate()");
+  await waitFor(
+    () =>
+      client.evaluate(
+        `(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "image-set" && payload.images[0].status === "skipped" && window.location.hash === ${JSON.stringify(projectAHash)}; } catch (error) { return false; } })()`,
+      ),
+    "project A to retain the visible route after background project creation",
+    45_000,
+  );
+  const routeGuardEstimateEvidence = await client.evaluate(`(() => {
+    window.removeEventListener("hashchange", window.__routeGuardHashChangeHandler);
+    const evidence = {
+      requestCount: window.__routeGuardEstimateRequestCount,
+      releaseCount: window.__routeGuardEstimateReleaseCount,
+      hashChangeCount: window.__routeGuardHashChangeCount,
+    };
+    if (window.__routeGuardEstimateHadOwn) {
+      Object.defineProperty(
+        navigator.storage,
+        "estimate",
+        window.__routeGuardEstimateDescriptor
+      );
+    } else {
+      delete navigator.storage.estimate;
+    }
+    delete window.__routeGuardHashChangeHandler;
+    delete window.__routeGuardEstimateDescriptor;
+    delete window.__releaseRouteGuardEstimate;
+    return evidence;
+  })()`);
+  assert.equal(routeGuardEstimateEvidence.requestCount, 1);
+  assert.equal(routeGuardEstimateEvidence.releaseCount, 1);
+  assert.equal(routeGuardEstimateEvidence.hashChangeCount >= 1, true);
+  const projectsAfterRouteGuardCreate = await readStoredProjects(client);
+  assert.equal(projectsAfterRouteGuardCreate.length, 2);
+  const routeGuardProject = projectsAfterRouteGuardCreate.find(
+    (project) => project.localProjectKey !== projectAKey,
+  );
+  assert.equal(routeGuardProject.name, "face-lena.jpg");
+  const routeGuardProjectState = await readStoredState(
+    client,
+    routeGuardProject.localProjectKey,
+  );
+  assert.equal(routeGuardProjectState.records.length, 1);
+  assert.equal(routeGuardProjectState.records[0].status, "unlabeled");
+  assert.equal(routeGuardProjectState.assetIds.every(Boolean), true);
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: countsBeforeRouteGuardCreate.projects + 1,
+    records: countsBeforeRouteGuardCreate.records + 1,
+    assets: countsBeforeRouteGuardCreate.assets + 1,
+  });
+
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "2 projects" && window.location.hash === ""',
+      ),
+    "the hub after the guarded project creation",
+  );
+  const routeGuardProjectExpectedHash =
+    "#/project/" + encodeURIComponent(routeGuardProject.localProjectKey);
+  await clickProjectCardAction(client, "face-lena.jpg", ".open-project-button");
+  await waitFor(
+    () =>
+      client.evaluate(
+        `document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "face-lena.jpg" && window.location.hash === ${JSON.stringify(routeGuardProjectExpectedHash)}`,
+      ),
+    "the project created during the route race to open from the hub",
+  );
+  const routeGuardProjectHash = await client.evaluate("window.location.hash");
+  assert.notEqual(routeGuardProjectHash, projectAHash);
+  await client.evaluate(`(() => {
+    document.querySelector("#needsReviewButton").click();
+    document.querySelector("#exitProjectButton").click();
+    window.location.hash = ${JSON.stringify(projectAHash)};
+  })()`);
+  await waitFor(
+    () =>
+      client.evaluate(
+        `(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "image-set" && payload.images[0].status === "skipped" && window.location.hash === ${JSON.stringify(projectAHash)}; } catch (error) { return false; } })()`,
+      ),
+    "project A to own navigation during the other project's pending exit save",
     30_000,
   );
-  assert.deepEqual(await readBusinessState(client), restoredAfterReplacementFailure);
-  console.log("browser image-set workflow test passed");
+  assert.equal(
+    (await readStoredState(client, routeGuardProject.localProjectKey)).records[0].status,
+    "needs_review",
+  );
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "2 projects" && window.location.hash === ""',
+      ),
+    "the hub before the cross-tab deletion switch test",
+  );
+
+  await client.setFiles("#zipInput", [boundedWorkerZip]);
+  await waitFor(
+    () =>
+      client.evaluate(
+        '(() => { try { const payload = JSON.parse(document.querySelector("#jsonOutput").value); return document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "bounded-workers" && payload.images.length === 8 && document.querySelector("#projectSaveState").dataset.state === "saved"; } catch (error) { return false; } })()',
+      ),
+    "the temporary multi-image project for cross-tab deletion",
+    60_000,
+  );
+  const crossTabDeletedProjectHash = await client.evaluate("window.location.hash");
+  const crossTabDeletedProjectKey = decodeURIComponent(
+    crossTabDeletedProjectHash.slice("#/project/".length),
+  );
+  const crossTabSwitchBusinessBefore = await readBusinessState(client);
+  const crossTabSwitchJsonBefore = await client.evaluate(
+    'document.querySelector("#jsonOutput").value',
+  );
+  const crossTabSwitchFileMetaBefore = await client.evaluate(
+    'document.querySelector("#fileMeta").textContent',
+  );
+  await client.evaluate(`(() => {
+    window.__switchUnhandledRejections = [];
+    window.__switchUnhandledRejectionHandler = (event) => {
+      window.__switchUnhandledRejections.push(
+        String(event.reason?.message || event.reason || "Unknown rejection")
+      );
+    };
+    window.addEventListener(
+      "unhandledrejection",
+      window.__switchUnhandledRejectionHandler
+    );
+  })()`);
+  const switchRuntimeEventOffset = client.events.length;
+  const crossTabDeleteResult = await client.evaluate(`(async () => {
+    const storage = await import("/src/storage.js?v=browser-cross-tab-switch-delete");
+    return storage.deleteLocalProject(${JSON.stringify(crossTabDeletedProjectKey)});
+  })()`);
+  assert.equal(crossTabDeleteResult, true);
+  assert.equal(await readStoredState(client, crossTabDeletedProjectKey), null);
+  await client.evaluate('document.querySelector("#nextImageButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#statusText").textContent.includes("deleted in another tab") && document.querySelector("#statusText").textContent.includes("Export this tab\'s annotations now") && document.querySelector("#projectSaveState").dataset.state === "failed" && document.querySelector("#projectSaveState").textContent.toLowerCase().includes("export annotations now")',
+      ),
+    "the readable deleted-project error after Next",
+  );
+  await client.evaluate("new Promise((resolveDelay) => setTimeout(resolveDelay, 100))");
+  const crossTabSwitchBusinessAfter = await readBusinessState(client);
+  const crossTabSwitchUnhandledRejections = await client.evaluate(`(() => {
+    window.removeEventListener(
+      "unhandledrejection",
+      window.__switchUnhandledRejectionHandler
+    );
+    return window.__switchUnhandledRejections;
+  })()`);
+  assert.deepEqual(crossTabSwitchBusinessAfter, crossTabSwitchBusinessBefore);
+  assert.equal(
+    await client.evaluate('document.querySelector("#jsonOutput").value'),
+    crossTabSwitchJsonBefore,
+  );
+  assert.equal(
+    await client.evaluate('document.querySelector("#fileMeta").textContent'),
+    crossTabSwitchFileMetaBefore,
+  );
+  assert.deepEqual(crossTabSwitchUnhandledRejections, []);
+  assert.equal(
+    client.events
+      .slice(switchRuntimeEventOffset)
+      .some((event) => event.method === "Runtime.exceptionThrown"),
+    false,
+  );
+
+  await client.evaluate(`(() => {
+    window.__crossTabExitConfirmMessages = [];
+    window.__allowCrossTabExit = false;
+    window.confirm = (message) => {
+      window.__crossTabExitConfirmMessages.push(String(message));
+      return window.__allowCrossTabExit;
+    };
+  })()`);
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        `document.querySelector("#annotationWorkspaceView").hidden === false && document.querySelector("#projectName").textContent === "bounded-workers" && document.querySelector("#projectSaveState").dataset.state === "failed" && document.querySelector("#statusText").textContent.includes("Exit cancelled") && document.querySelector("#exitProjectButton").disabled === false && window.location.hash === ${JSON.stringify(crossTabDeletedProjectHash)}`,
+      ),
+    "the cross-tab deleted project to remain open after exit cancellation",
+  );
+  assert.equal(
+    await client.evaluate('document.querySelector("#jsonOutput").value'),
+    crossTabSwitchJsonBefore,
+  );
+  const cancelledCrossTabExitMessages = await client.evaluate(
+    "window.__crossTabExitConfirmMessages",
+  );
+  assert.equal(cancelledCrossTabExitMessages.length, 1);
+  assert.match(
+    cancelledCrossTabExitMessages[0],
+    /not saved.*Export annotation JSON.*Exit anyway.*abandon/i,
+  );
+
+  await client.evaluate("window.__allowCrossTabExit = true");
+  await client.evaluate('document.querySelector("#exitProjectButton").click()');
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectHubView").hidden === false && document.querySelector("#projectLibraryCount").textContent.trim() === "2 projects" && document.querySelector("#hubStatusText").textContent.includes("Exited without the unsaved in-memory changes") && window.location.hash === ""',
+      ),
+    "the hub after explicitly abandoning the cross-tab deleted project",
+  );
+  assert.equal(
+    (await client.evaluate("window.__crossTabExitConfirmMessages")).length,
+    2,
+  );
+  await client.evaluate("window.confirm = () => true");
+  await clickProjectCardAction(client, "face-lena.jpg", ".delete-project-button");
+  await waitFor(
+    () =>
+      client.evaluate(
+        'document.querySelector("#projectLibraryCount").textContent.trim() === "1 project" && document.querySelector("#hubStatusText").textContent.includes("Deleted the local copy of face-lena.jpg")',
+      ),
+    "the route-race project cleanup",
+    30_000,
+  );
+  assert.deepEqual((await readHubState(client)).names, ["image-set"]);
+  assert.deepEqual(await readProjectStoreCounts(client), {
+    projects: 1,
+    records: 3,
+    assets: 3,
+  });
+  assert.deepEqual(
+    await readStoredState(client, projectAKey),
+    storedAAfterRejectedDeletedWrites,
+  );
+
+  console.log("browser local-project hub workflow test passed");
 } finally {
   if (client) {
     try {
@@ -1545,7 +1907,10 @@ try {
       break;
     } catch (error) {
       if (attempt === cleanupAttempts - 1) {
-        console.warn(`Temporary browser profile could not be removed: ${relative(tmpdir(), profileDirectory)}`);
+        console.warn(
+          "Temporary browser profile could not be removed: " +
+            relative(tmpdir(), profileDirectory),
+        );
       } else {
         await delay(100);
       }

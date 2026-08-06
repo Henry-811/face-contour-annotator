@@ -1,20 +1,22 @@
 import {
-  CURRENT_PROJECT_KEY,
   DATA_URL_SIZE_RATIO,
   DRAFT_DB_NAME,
   DRAFT_DB_VERSION,
   DRAFT_IMAGE_KEY,
   DRAFT_STORE_NAME,
+  LEGACY_CURRENT_PROJECT_KEY,
   PROJECT_IMAGE_ASSET_STORE_NAME,
   PROJECT_IMAGE_STORE_NAME,
   PROJECT_STORE_NAME,
   STORAGE_HEADROOM_RATIO,
-} from "./config.js?v=image-set-annotations-1";
+} from "./config.js?v=local-projects-1";
 import {
+  createLocalProjectKey,
+  createLocalWriteToken,
   toProjectImageAsset,
   toProjectImageRecord,
   toProjectMetadata,
-} from "./project.js?v=image-set-annotations-1";
+} from "./project.js?v=local-projects-1";
 
 function openDraftDatabase() {
   return new Promise((resolve, reject) => {
@@ -23,6 +25,7 @@ function openDraftDatabase() {
       return;
     }
     const request = window.indexedDB.open(DRAFT_DB_NAME, DRAFT_DB_VERSION);
+    let settled = false;
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(DRAFT_STORE_NAME)) {
@@ -38,82 +41,42 @@ function openDraftDatabase() {
         database.createObjectStore(PROJECT_IMAGE_ASSET_STORE_NAME);
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("IndexedDB could not be opened."));
+    request.onsuccess = () => {
+      const database = request.result;
+      if (settled) {
+        database.close();
+        return;
+      }
+      settled = true;
+      database.onversionchange = () => database.close();
+      resolve(database);
+    };
+    request.onerror = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(request.error || new Error("IndexedDB could not be opened."));
+    };
+    request.onblocked = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(
+        new Error(
+          "Local project storage is being used by an older tab. Close other Face Contour Lab tabs and refresh.",
+        ),
+      );
+    };
   });
 }
 
-async function withStore(storeName, mode, callback) {
+async function withStores(storeNames, mode, callback) {
   const database = await openDraftDatabase();
   try {
     return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(storeName, mode);
-      const store = transaction.objectStore(storeName);
-      let callbackResult;
-      let callbackFailure = null;
-      let abortRequested = false;
-      transaction.oncomplete = () => resolve(callbackResult);
-      transaction.onerror = () =>
-        reject(callbackFailure || transaction.error || new Error("IndexedDB transaction failed."));
-      transaction.onabort = () =>
-        reject(callbackFailure || transaction.error || new Error("IndexedDB transaction aborted."));
-      const abort = (error) => {
-        if (abortRequested) {
-          return;
-        }
-        abortRequested = true;
-        callbackFailure = error;
-        transaction.abort();
-      };
-      try {
-        callbackResult = callback(store);
-        if (typeof callbackResult?.then === "function") {
-          Promise.resolve(callbackResult).catch((error) => {
-            callbackFailure = callbackFailure || error;
-            if (!abortRequested) {
-              try {
-                abort(error);
-              } catch (abortError) {
-                reject(
-                  new AggregateError(
-                    [error, abortError],
-                    "IndexedDB callback and transaction abort both failed.",
-                  ),
-                );
-              }
-            }
-          });
-        }
-      } catch (error) {
-        abort(error);
-      }
-    });
-  } finally {
-    database.close();
-  }
-}
-
-function withDraftStore(mode, callback) {
-  return withStore(DRAFT_STORE_NAME, mode, callback);
-}
-
-function withProjectStore(mode, callback) {
-  return withStore(PROJECT_STORE_NAME, mode, callback);
-}
-
-function withProjectImageStore(mode, callback) {
-  return withStore(PROJECT_IMAGE_STORE_NAME, mode, callback);
-}
-
-function withProjectImageAssetStore(mode, callback) {
-  return withStore(PROJECT_IMAGE_ASSET_STORE_NAME, mode, callback);
-}
-
-async function withProjectStores(storeNames, callback) {
-  const database = await openDraftDatabase();
-  try {
-    return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(storeNames, "readwrite");
+      const transaction = database.transaction(storeNames, mode);
       const stores = Object.fromEntries(
         storeNames.map((storeName) => [storeName, transaction.objectStore(storeName)]),
       );
@@ -122,17 +85,9 @@ async function withProjectStores(storeNames, callback) {
       let abortRequested = false;
       transaction.oncomplete = () => resolve(callbackResult);
       transaction.onerror = () =>
-        reject(
-          callbackFailure ||
-            transaction.error ||
-            new Error("IndexedDB image-set transaction failed."),
-        );
+        reject(callbackFailure || transaction.error || new Error("IndexedDB transaction failed."));
       transaction.onabort = () =>
-        reject(
-          callbackFailure ||
-            transaction.error ||
-            new Error("IndexedDB image-set transaction aborted."),
-        );
+        reject(callbackFailure || transaction.error || new Error("IndexedDB transaction aborted."));
       const control = {
         abort(error) {
           if (abortRequested) {
@@ -171,172 +126,272 @@ async function withProjectStores(storeNames, callback) {
   }
 }
 
-export class StaleImageSetWriteError extends Error {
-  constructor() {
-    super("A different image set is now active in another tab. Export this tab's annotations before continuing.");
-    this.name = "StaleImageSetWriteError";
-    this.code = "STALE_IMAGE_SET_WRITE";
+function withStore(storeName, mode, callback) {
+  return withStores([storeName], mode, (stores, control) =>
+    callback(stores[storeName], control),
+  );
+}
+
+function requestValue(request, errorMessage) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error(errorMessage));
+  });
+}
+
+function normalizeProjectKey(localProjectKey) {
+  const key = String(localProjectKey || "").trim();
+  if (!key || key === LEGACY_CURRENT_PROJECT_KEY) {
+    throw new Error("A valid local project key is required.");
+  }
+  return key;
+}
+
+function getProjectImageIds(project) {
+  const imageIds = (project?.images || []).map((image) => String(image?.id || "").trim());
+  if (!imageIds.length || imageIds.some((imageId) => !imageId)) {
+    throw new Error("A local project needs image IDs.");
+  }
+  if (new Set(imageIds).size !== imageIds.length) {
+    throw new Error("Image IDs must be unique inside a local project.");
+  }
+  return imageIds;
+}
+
+function assertProjectOwnsImage(project, imageId) {
+  if (!(project?.images || []).some((image) => image.id === imageId)) {
+    throw new Error("The image does not belong to this local project.");
   }
 }
 
-function writeIfCurrentImageSet({ stores, control, project, write }) {
-  return new Promise((resolve, reject) => {
-    const request = stores[PROJECT_STORE_NAME].get(CURRENT_PROJECT_KEY);
-    request.onsuccess = () => {
-      const currentProject = request.result;
-      if (
-        !project?.localWriteToken ||
-        currentProject?.localWriteToken !== project.localWriteToken
-      ) {
-        const error = new StaleImageSetWriteError();
-        control.abort(error);
-        reject(error);
-        return;
-      }
-      try {
-        write();
-        resolve();
-      } catch (error) {
-        control.abort(error);
-        reject(error);
-      }
-    };
-    request.onerror = () =>
-      reject(request.error || new Error("Current image set could not be checked."));
-  });
-}
-
-function getProjectRevisionSignature(project) {
-  return JSON.stringify({
-    localWriteToken: project?.localWriteToken || null,
-    version: project?.version || null,
-    name: project?.name || null,
-    createdAt: project?.createdAt || null,
-    updatedAt: project?.updatedAt || null,
-    currentImageId: project?.currentImageId || null,
-    sourceType: project?.source?.type || null,
-    sourceImportedAt: project?.source?.importedAt || null,
-    images: (project?.images || []).map((image) => ({
-      id: image.id,
-      path: image.path || image.name,
-      width: image.width,
-      height: image.height,
-      status: image.status,
-      updatedAt: image.updatedAt || null,
-      embeddedDataBytes: typeof image.dataUrl === "string" ? image.dataUrl.length : null,
-      embeddedContourCount: Array.isArray(image.contours) ? image.contours.length : null,
-    })),
-  });
-}
-
-function writeIfExpectedImageSet({ stores, control, expectedProject, write }) {
-  return new Promise((resolve, reject) => {
-    const request = stores[PROJECT_STORE_NAME].get(CURRENT_PROJECT_KEY);
-    request.onsuccess = () => {
-      if (
-        getProjectRevisionSignature(request.result) !==
-        getProjectRevisionSignature(expectedProject)
-      ) {
-        const error = new StaleImageSetWriteError();
-        control.abort(error);
-        reject(error);
-        return;
-      }
-      try {
-        write();
-        resolve();
-      } catch (error) {
-        control.abort(error);
-        reject(error);
-      }
-    };
-    request.onerror = () =>
-      reject(request.error || new Error("Current image set could not be checked."));
-  });
-}
-
-function prepareProjectReplacement(project) {
+function prepareLocalProject(project) {
+  const localProjectKey = normalizeProjectKey(project?.localProjectKey);
   if (!project?.localWriteToken) {
-    throw new Error("A replacement image set needs a local write token.");
+    throw new Error("A local project needs a write token.");
   }
-  const metadata = toProjectMetadata(project);
+  const imageIds = getProjectImageIds(project);
+  const metadata = toProjectMetadata({ ...project, localProjectKey });
   const records = project.images.map(toProjectImageRecord);
   const assets = project.images.map(toProjectImageAsset);
   if (assets.some((asset) => typeof asset.dataUrl !== "string" || !asset.dataUrl)) {
-    throw new Error("Every replacement image needs source data.");
+    throw new Error("Every local project image needs source data.");
   }
-  return { metadata, records, assets };
+  return { localProjectKey, imageIds, metadata, records, assets };
 }
 
-function writeProjectReplacement(stores, replacement) {
-  stores[PROJECT_STORE_NAME].clear();
-  stores[PROJECT_IMAGE_STORE_NAME].clear();
-  stores[PROJECT_IMAGE_ASSET_STORE_NAME].clear();
-  stores[PROJECT_STORE_NAME].put(replacement.metadata, CURRENT_PROJECT_KEY);
-  replacement.records.forEach((record) =>
-    stores[PROJECT_IMAGE_STORE_NAME].put(record, record.id),
-  );
-  replacement.assets.forEach((asset) =>
-    stores[PROJECT_IMAGE_ASSET_STORE_NAME].put(asset, asset.id),
-  );
+export class LocalProjectDeletedError extends Error {
+  constructor() {
+    super("This local project was deleted in another tab. Export this tab's annotations now.");
+    this.name = "LocalProjectDeletedError";
+    this.code = "LOCAL_PROJECT_DELETED";
+  }
+}
+
+export class StaleLocalProjectWriteError extends Error {
+  constructor() {
+    super("This local project changed in another tab. Export this tab's annotations before continuing.");
+    this.name = "StaleLocalProjectWriteError";
+    this.code = "STALE_LOCAL_PROJECT_WRITE";
+  }
+}
+
+function writeIfProjectIsCurrent({ stores, control, project, write }) {
+  return new Promise((resolve, reject) => {
+    let localProjectKey;
+    try {
+      localProjectKey = normalizeProjectKey(project?.localProjectKey);
+    } catch (error) {
+      control.abort(error);
+      reject(error);
+      return;
+    }
+    const request = stores[PROJECT_STORE_NAME].get(localProjectKey);
+    request.onsuccess = () => {
+      const storedProject = request.result;
+      if (!storedProject) {
+        const error = new LocalProjectDeletedError();
+        control.abort(error);
+        reject(error);
+        return;
+      }
+      if (
+        !project?.localWriteToken ||
+        storedProject.localWriteToken !== project.localWriteToken
+      ) {
+        const error = new StaleLocalProjectWriteError();
+        control.abort(error);
+        reject(error);
+        return;
+      }
+      try {
+        write({ localProjectKey, storedProject });
+        resolve();
+      } catch (error) {
+        control.abort(error);
+        reject(error);
+      }
+    };
+    request.onerror = () => {
+      const error = request.error || new Error("The local project could not be checked.");
+      control.abort(error);
+      reject(error);
+    };
+  });
 }
 
 export function putStoredImage(dataUrl) {
-  return withDraftStore("readwrite", (store) => {
+  return withStore(DRAFT_STORE_NAME, "readwrite", (store) => {
     store.put({ dataUrl, updatedAt: Date.now() }, DRAFT_IMAGE_KEY);
   });
 }
 
 export function getStoredImage() {
-  return withDraftStore(
-    "readonly",
-    (store) =>
-      new Promise((resolve, reject) => {
-        const request = store.get(DRAFT_IMAGE_KEY);
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () =>
-          reject(request.error || new Error("Stored image could not be read."));
-      }),
+  return withStore(DRAFT_STORE_NAME, "readonly", (store) =>
+    requestValue(store.get(DRAFT_IMAGE_KEY), "Stored image could not be read.").then(
+      (value) => value || null,
+    ),
   );
 }
 
 export function deleteStoredImage() {
-  return withDraftStore("readwrite", (store) => {
+  return withStore(DRAFT_STORE_NAME, "readwrite", (store) => {
     store.delete(DRAFT_IMAGE_KEY);
   });
 }
 
-export function putCurrentProject(project) {
-  return withProjectStore("readwrite", (store) => {
-    store.put(toProjectMetadata(project), CURRENT_PROJECT_KEY);
-  });
-}
-
-export function claimCurrentProjectWriteToken({ expectedProject, project }) {
-  return withProjectStores(
-    [PROJECT_STORE_NAME],
-    (stores, control) =>
-      writeIfExpectedImageSet({
-        stores,
-        control,
-        expectedProject,
-        write() {
-          stores[PROJECT_STORE_NAME].put(toProjectMetadata(project), CURRENT_PROJECT_KEY);
-        },
-      }),
+export function listLocalProjects() {
+  return withStore(PROJECT_STORE_NAME, "readonly", (store) =>
+    requestValue(store.getAll(), "Local projects could not be listed.").then((projects) =>
+      (projects || [])
+        .filter(
+          (project) =>
+            project?.localProjectKey && project.localProjectKey !== LEGACY_CURRENT_PROJECT_KEY,
+        )
+        .sort((left, right) => {
+          const updatedDifference =
+            Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || "");
+          if (Number.isFinite(updatedDifference) && updatedDifference !== 0) {
+            return updatedDifference;
+          }
+          return String(left.name || "").localeCompare(String(right.name || ""));
+        }),
+    ),
   );
 }
 
-export function putProjectSnapshot({ project, image }) {
-  return withProjectStores(
+export function getLocalProject(localProjectKey) {
+  let key;
+  try {
+    key = normalizeProjectKey(localProjectKey);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return withStore(PROJECT_STORE_NAME, "readonly", (store) =>
+    requestValue(store.get(key), "Local project metadata could not be read.").then(
+      (project) => project || null,
+    ),
+  );
+}
+
+export function getLocalProjectImageRecords(localProjectKey, imageIds = []) {
+  let key;
+  try {
+    key = normalizeProjectKey(localProjectKey);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return withStores(
     [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME],
+    "readonly",
+    async (stores) => {
+      const project = await requestValue(
+        stores[PROJECT_STORE_NAME].get(key),
+        "Local project metadata could not be read.",
+      );
+      if (!project) {
+        throw new LocalProjectDeletedError();
+      }
+      imageIds.forEach((imageId) => assertProjectOwnsImage(project, imageId));
+      const requests = imageIds.map((imageId) => stores[PROJECT_IMAGE_STORE_NAME].get(imageId));
+      return Promise.all(
+        requests.map((request) =>
+          requestValue(request, "Local project image records could not be read."),
+        ),
+      ).then((records) => records.map((record) => record || null));
+    },
+  );
+}
+
+export function getLocalProjectImageRecord(localProjectKey, imageId) {
+  return getLocalProjectImageRecords(localProjectKey, [imageId]).then(
+    ([record]) => record || null,
+  );
+}
+
+export function getLocalProjectImageAsset(localProjectKey, imageId) {
+  let key;
+  try {
+    key = normalizeProjectKey(localProjectKey);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return withStores(
+    [PROJECT_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
+    "readonly",
+    async (stores) => {
+      const project = await requestValue(
+        stores[PROJECT_STORE_NAME].get(key),
+        "Local project metadata could not be read.",
+      );
+      if (!project) {
+        throw new LocalProjectDeletedError();
+      }
+      assertProjectOwnsImage(project, imageId);
+      const asset = await requestValue(
+        stores[PROJECT_IMAGE_ASSET_STORE_NAME].get(imageId),
+        "Local project image asset could not be read.",
+      );
+      return asset || null;
+    },
+  );
+}
+
+export function createLocalProjectData(project) {
+  let prepared;
+  try {
+    prepared = prepareLocalProject(project);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return withStores(
+    [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
+    "readwrite",
+    (stores) => {
+      stores[PROJECT_STORE_NAME].add(prepared.metadata, prepared.localProjectKey);
+      prepared.records.forEach((record) =>
+        stores[PROJECT_IMAGE_STORE_NAME].add(record, record.id),
+      );
+      prepared.assets.forEach((asset) =>
+        stores[PROJECT_IMAGE_ASSET_STORE_NAME].add(asset, asset.id),
+      );
+    },
+  );
+}
+
+export function putLocalProjectSnapshot({ project, image }) {
+  return withStores(
+    [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME],
+    "readwrite",
     (stores, control) =>
-      writeIfCurrentImageSet({
+      writeIfProjectIsCurrent({
         stores,
         control,
         project,
-        write() {
-          stores[PROJECT_STORE_NAME].put(toProjectMetadata(project), CURRENT_PROJECT_KEY);
+        write({ localProjectKey, storedProject }) {
+          if (image) {
+            assertProjectOwnsImage(storedProject, image.id);
+          }
+          stores[PROJECT_STORE_NAME].put(toProjectMetadata(project), localProjectKey);
           if (image) {
             const record = toProjectImageRecord(image);
             stores[PROJECT_IMAGE_STORE_NAME].put(record, record.id);
@@ -346,209 +401,201 @@ export function putProjectSnapshot({ project, image }) {
   );
 }
 
-export function getCurrentProject() {
-  return withProjectStore(
-    "readonly",
-    (store) =>
-      new Promise((resolve, reject) => {
-        const request = store.get(CURRENT_PROJECT_KEY);
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () =>
-          reject(request.error || new Error("Current project could not be read."));
-      }),
-  );
-}
-
-export function deleteCurrentProject() {
-  return withProjectStore("readwrite", (store) => {
-    store.delete(CURRENT_PROJECT_KEY);
-  });
-}
-
-export function putProjectImageRecord(image) {
-  return withProjectImageStore("readwrite", (store) => {
-    const record = toProjectImageRecord(image);
-    store.put(record, record.id);
-  });
-}
-
-export function putProjectImageRecords(images = []) {
-  return withProjectImageStore("readwrite", (store) => {
-    images.forEach((image) => {
-      const record = toProjectImageRecord(image);
-      store.put(record, record.id);
-    });
-  });
-}
-
-export function getProjectImageRecord(imageId) {
-  return withProjectImageStore(
-    "readonly",
-    (store) =>
-      new Promise((resolve, reject) => {
-        const request = store.get(imageId);
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () =>
-          reject(request.error || new Error("Project image record could not be read."));
-      }),
-  );
-}
-
-export function getProjectImageRecords(imageIds = []) {
-  return withProjectImageStore(
-    "readonly",
-    (store) =>
-      new Promise((resolve, reject) => {
-        const request = store.getAll();
-        request.onsuccess = () => {
-          const recordById = new Map(
-            (request.result || []).map((record) => [record.id, record]),
-          );
-          resolve(imageIds.map((imageId) => recordById.get(imageId) || null));
-        };
-        request.onerror = () =>
-          reject(request.error || new Error("Project image records could not be read."));
-      }),
-  );
-}
-
-export function putProjectImageAsset(image) {
-  return withProjectImageAssetStore("readwrite", (store) => {
-    const asset = toProjectImageAsset(image);
-    if (asset.dataUrl) {
-      store.put(asset, asset.id);
-    }
-  });
-}
-
-export function putProjectImageAssets(images = []) {
-  return withProjectImageAssetStore("readwrite", (store) => {
-    images.forEach((image) => {
-      const asset = toProjectImageAsset(image);
-      if (asset.dataUrl) {
-        store.put(asset, asset.id);
-      }
-    });
-  });
-}
-
-export function getProjectImageAsset(imageId) {
-  return withProjectImageAssetStore(
-    "readonly",
-    (store) =>
-      new Promise((resolve, reject) => {
-        const request = store.get(imageId);
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () =>
-          reject(request.error || new Error("Project image asset could not be read."));
-      }),
-  );
-}
-
-export function clearProjectImageRecords() {
-  return withProjectImageStore("readwrite", (store) => {
-    store.clear();
-  });
-}
-
-export function clearProjectImageAssets() {
-  return withProjectImageAssetStore("readwrite", (store) => {
-    store.clear();
-  });
-}
-
-export async function clearCurrentProjectData() {
-  await withProjectStores(
-    [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
-    (stores) => {
-      stores[PROJECT_STORE_NAME].clear();
-      stores[PROJECT_IMAGE_STORE_NAME].clear();
-      stores[PROJECT_IMAGE_ASSET_STORE_NAME].clear();
-    },
-  );
-}
-
-export function getProjectImageAssets(imageIds = []) {
-  return withProjectImageAssetStore(
-    "readonly",
-    (store) =>
-      new Promise((resolve, reject) => {
-        const request = store.getAll();
-        request.onsuccess = () => {
-          const assetById = new Map(
-            (request.result || []).map((asset) => [asset.id, asset]),
-          );
-          resolve(imageIds.map((imageId) => assetById.get(imageId) || null));
-        };
-        request.onerror = () =>
-          reject(request.error || new Error("Project image assets could not be read."));
-      }),
-  );
-}
-
-export function replaceCurrentProjectData(project) {
-  let replacement;
+export function replaceLocalProjectAnnotations(project) {
+  let imageIds;
   try {
-    replacement = prepareProjectReplacement(project);
+    imageIds = getProjectImageIds(project);
   } catch (error) {
     return Promise.reject(error);
   }
-  return withProjectStores(
-    [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
-    (stores) => {
-      writeProjectReplacement(stores, replacement);
-    },
-  );
-}
-
-export function replaceCurrentProjectDataIfUnchanged({ expectedProject, project }) {
-  let replacement;
-  try {
-    replacement = prepareProjectReplacement(project);
-  } catch (error) {
-    return Promise.reject(error);
-  }
-  return withProjectStores(
-    [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
-    (stores, control) =>
-      writeIfExpectedImageSet({
-        stores,
-        control,
-        expectedProject,
-        write() {
-          writeProjectReplacement(stores, replacement);
-        },
-      }),
-  );
-}
-
-/**
- * Atomically replace annotation metadata/records while preserving the already stored
- * source-image assets. Used when an annotation JSON is applied to the open image set.
- */
-export function replaceCurrentProjectAnnotations(project) {
   const metadata = toProjectMetadata(project);
   const records = project.images.map(toProjectImageRecord);
-  return withProjectStores(
+  return withStores(
     [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME],
+    "readwrite",
     (stores, control) =>
-      writeIfCurrentImageSet({
+      writeIfProjectIsCurrent({
         stores,
         control,
         project,
-        write() {
-          stores[PROJECT_STORE_NAME].put(metadata, CURRENT_PROJECT_KEY);
-          stores[PROJECT_IMAGE_STORE_NAME].clear();
-          records.forEach((record) => stores[PROJECT_IMAGE_STORE_NAME].put(record, record.id));
+        write({ localProjectKey, storedProject }) {
+          const storedImageIds = getProjectImageIds(storedProject);
+          if (
+            storedImageIds.length !== imageIds.length ||
+            storedImageIds.some((imageId, index) => imageId !== imageIds[index])
+          ) {
+            throw new StaleLocalProjectWriteError();
+          }
+          storedImageIds.forEach((imageId) =>
+            stores[PROJECT_IMAGE_STORE_NAME].delete(imageId),
+          );
+          records.forEach((record) =>
+            stores[PROJECT_IMAGE_STORE_NAME].put(record, record.id),
+          );
+          stores[PROJECT_STORE_NAME].put(metadata, localProjectKey);
         },
       }),
   );
 }
 
-/**
- * Ask the browser to keep this origin's IndexedDB data out of eviction.
- * Without it the annotation store is best-effort and can be dropped without warning.
- */
+export function putLocalProjectImageAsset({ project, image }) {
+  return withStores(
+    [PROJECT_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
+    "readwrite",
+    (stores, control) =>
+      writeIfProjectIsCurrent({
+        stores,
+        control,
+        project,
+        write({ storedProject }) {
+          assertProjectOwnsImage(storedProject, image?.id);
+          const asset = toProjectImageAsset(image);
+          if (!asset.dataUrl) {
+            throw new Error("A local project image asset needs source data.");
+          }
+          stores[PROJECT_IMAGE_ASSET_STORE_NAME].put(asset, asset.id);
+        },
+      }),
+  );
+}
+
+export function deleteLocalProject(localProjectKey) {
+  let key;
+  try {
+    key = normalizeProjectKey(localProjectKey);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return withStores(
+    [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
+    "readwrite",
+    (stores, control) =>
+      new Promise((resolve, reject) => {
+        const request = stores[PROJECT_STORE_NAME].get(key);
+        request.onsuccess = () => {
+          const project = request.result;
+          if (!project) {
+            resolve(false);
+            return;
+          }
+          try {
+            getProjectImageIds(project).forEach((imageId) => {
+              stores[PROJECT_IMAGE_STORE_NAME].delete(imageId);
+              stores[PROJECT_IMAGE_ASSET_STORE_NAME].delete(imageId);
+            });
+            stores[PROJECT_STORE_NAME].delete(key);
+            resolve(true);
+          } catch (error) {
+            control.abort(error);
+            reject(error);
+          }
+        };
+        request.onerror = () => {
+          const error = request.error || new Error("The local project could not be deleted.");
+          control.abort(error);
+          reject(error);
+        };
+      }),
+  );
+}
+
+export function migrateLegacyCurrentProject() {
+  return withStores(
+    [PROJECT_STORE_NAME, PROJECT_IMAGE_STORE_NAME, PROJECT_IMAGE_ASSET_STORE_NAME],
+    "readwrite",
+    (stores, control) =>
+      new Promise((resolve, reject) => {
+        const legacyRequest = stores[PROJECT_STORE_NAME].get(LEGACY_CURRENT_PROJECT_KEY);
+        legacyRequest.onsuccess = () => {
+          const legacyProject = legacyRequest.result;
+          if (!legacyProject) {
+            resolve({ migrated: false, localProjectKey: null, imageCount: 0 });
+            return;
+          }
+          let imageIds;
+          try {
+            imageIds = getProjectImageIds(legacyProject);
+          } catch (error) {
+            control.abort(error);
+            reject(error);
+            return;
+          }
+          const recordResults = new Array(imageIds.length);
+          const assetResults = new Array(imageIds.length);
+          let pending = imageIds.length * 2;
+          const fail = (error) => {
+            control.abort(error);
+            reject(error);
+          };
+          const finishRead = () => {
+            pending -= 1;
+            if (pending !== 0) {
+              return;
+            }
+            try {
+              const localProjectKey = createLocalProjectKey();
+              const migratedProject = {
+                ...legacyProject,
+                localProjectKey,
+                localWriteToken: legacyProject.localWriteToken || createLocalWriteToken(),
+              };
+              legacyProject.images.forEach((image, index) => {
+                const record = recordResults[index];
+                if (!record) {
+                  if (!Array.isArray(image.contours)) {
+                    throw new Error(
+                      `Stored annotation record is missing for ${image.path || image.name || image.id}.`,
+                    );
+                  }
+                  stores[PROJECT_IMAGE_STORE_NAME].put(toProjectImageRecord(image), image.id);
+                }
+                const asset = assetResults[index];
+                if (!asset) {
+                  if (typeof image.dataUrl !== "string" || !image.dataUrl) {
+                    throw new Error(
+                      `Stored source image is missing for ${image.path || image.name || image.id}.`,
+                    );
+                  }
+                  stores[PROJECT_IMAGE_ASSET_STORE_NAME].put(toProjectImageAsset(image), image.id);
+                }
+              });
+              stores[PROJECT_STORE_NAME].add(
+                toProjectMetadata(migratedProject),
+                localProjectKey,
+              );
+              stores[PROJECT_STORE_NAME].delete(LEGACY_CURRENT_PROJECT_KEY);
+              resolve({ migrated: true, localProjectKey, imageCount: imageIds.length });
+            } catch (error) {
+              fail(error);
+            }
+          };
+          imageIds.forEach((imageId, index) => {
+            const recordRequest = stores[PROJECT_IMAGE_STORE_NAME].get(imageId);
+            recordRequest.onsuccess = () => {
+              recordResults[index] = recordRequest.result || null;
+              finishRead();
+            };
+            recordRequest.onerror = () =>
+              fail(recordRequest.error || new Error("Legacy annotation data could not be read."));
+            const assetRequest = stores[PROJECT_IMAGE_ASSET_STORE_NAME].get(imageId);
+            assetRequest.onsuccess = () => {
+              assetResults[index] = assetRequest.result || null;
+              finishRead();
+            };
+            assetRequest.onerror = () =>
+              fail(assetRequest.error || new Error("Legacy image data could not be read."));
+          });
+        };
+        legacyRequest.onerror = () => {
+          const error = legacyRequest.error || new Error("Legacy project metadata could not be read.");
+          control.abort(error);
+          reject(error);
+        };
+      }),
+  );
+}
+
+/** Ask the browser to keep this origin's IndexedDB data out of eviction. */
 export async function requestPersistentStorage() {
   if (!navigator.storage?.persist || !navigator.storage?.persisted) {
     return { supported: false, persisted: false };
@@ -571,15 +618,10 @@ export async function estimateStorage() {
   };
 }
 
-/**
- * Decides whether a batch of image files fits in the remaining storage budget.
- * `fittableCount` lets the caller suggest a workable batch size instead of just failing.
- */
 export function planImportStorage({ fileSizes = [], usage = 0, quota = 0 }) {
   const toStoredBytes = (size) => (Number(size) || 0) * DATA_URL_SIZE_RATIO;
   const requiredBytes = fileSizes.reduce((total, size) => total + toStoredBytes(size), 0);
   if (!quota) {
-    // No estimate available: let the import through and rely on the save-failure path.
     return {
       known: false,
       fits: true,

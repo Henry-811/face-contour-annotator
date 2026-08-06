@@ -1,5 +1,7 @@
 # Image-set import and annotation-file workflow
 
+> Project lifecycle update: image-set parsing, annotation, and annotation-file rules in this document still apply. Creation, refresh routing, switching, and deletion now follow [Local project hub and focused annotation workspace](./local-project-hub.md), which supersedes the former single `current-project` slot and source-replacement flow.
+
 ## Feature Spec
 
 ### 1. Concept Brief source

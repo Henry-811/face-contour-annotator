@@ -12,8 +12,19 @@ export function isImageStatus(status) {
   return IMAGE_STATUSES.includes(status);
 }
 
-export function createImageId(index, now = Date.now()) {
-  return `img_${now.toString(36)}_${String(index + 1).padStart(4, "0")}`;
+export function createLocalProjectKey() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const randomPart = Math.random().toString(36).slice(2);
+  return `project-${Date.now().toString(36)}-${randomPart}`;
+}
+
+export function createImageId({ localProjectKey, index }) {
+  if (!localProjectKey || !Number.isInteger(index) || index < 0) {
+    throw new Error("An image ID needs a local project key and a non-negative index.");
+  }
+  return `project-image:${localProjectKey}:${String(index + 1).padStart(4, "0")}`;
 }
 
 export function createLocalWriteToken() {
@@ -128,12 +139,16 @@ export function createAnnotationProject({
   taskSchema,
   sourceType = "files",
   preferences = {},
+  localProjectKey = createLocalProjectKey(),
   localWriteToken = createLocalWriteToken(),
 }) {
   if (!Array.isArray(images) || images.length === 0) {
     throw new Error("A project needs at least one image.");
   }
   return {
+    // Browser-only storage/routing key. The annotation-file mapper intentionally
+    // does not expose this value.
+    localProjectKey,
     name,
     version: PROJECT_JSON_VERSION,
     source: {

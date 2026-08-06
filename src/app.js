@@ -25,19 +25,19 @@
   SOFT_RADIUS_MAX,
   SOFT_RADIUS_MIN,
   SOFT_RADIUS_STEP,
-} from "./config.js?v=image-set-annotations-1";
+} from "./config.js?v=local-projects-1";
 import * as geometry from "./geometry.js";
-import * as storage from "./storage.js?v=image-set-annotations-1";
+import * as storage from "./storage.js?v=local-projects-1";
 import {
   buildTaskSchema,
   getImageSize,
   normalizeImportedContours as normalizeImportedContourData,
   validateContoursForTaskSchema,
-} from "./exporter.js?v=image-set-annotations-1";
+} from "./exporter.js?v=local-projects-1";
 import {
   createAnnotationProject,
   createImageId,
-  createLocalWriteToken,
+  createLocalProjectKey,
   createProjectImage,
   getAdjacentImageId,
   getCurrentImage,
@@ -48,7 +48,7 @@ import {
   isImageStatus,
   releaseProjectImageAssets,
   touchProject,
-} from "./project.js?v=image-set-annotations-1";
+} from "./project.js?v=local-projects-1";
 import {
   applyAnnotationImport,
   assertAnnotationImportHasMatches,
@@ -57,8 +57,9 @@ import {
   parseAnnotationFile,
   planAnnotationImport,
   stripSharedRootDirectory,
-} from "./annotation-transfer.js?v=image-set-annotations-1";
-import { readImageSourcesFromZip } from "./zip-import.js?v=image-set-annotations-1";
+} from "./annotation-transfer.js?v=local-projects-1";
+import { readImageSourcesFromZip } from "./zip-import.js?v=local-projects-1";
+import { buildProjectHash, parseAppRoute } from "./routes.js?v=local-projects-1";
 import {
   applyCanvasScale,
   drawAnnotationCanvas,
@@ -68,6 +69,12 @@ import {
 } from "./renderer.js";
 import { buildDefaultFeatureContours } from "./templates.js";
 const state = {
+  view: "hub",
+  hubProjects: [],
+  hubLibraryStatus: "idle",
+  routeEpoch: 0,
+  routeTransitionTail: Promise.resolve(),
+  routeRetryPending: false,
   project: null,
   currentImageId: null,
   image: null,
@@ -104,7 +111,20 @@ const state = {
   annotationImportReport: null,
 };
 
+const LEGACY_DRAFT_PROJECT_KEY = "legacy-single-image-draft";
+
 const elements = {
+  projectHubView: document.getElementById("projectHubView"),
+  annotationWorkspaceView: document.getElementById("annotationWorkspaceView"),
+  hubTitle: document.getElementById("hubTitle"),
+  hubStorageNote: document.getElementById("hubStorageNote"),
+  hubStatusText: document.getElementById("hubStatusText"),
+  projectList: document.getElementById("projectList"),
+  projectListEmpty: document.getElementById("projectListEmpty"),
+  projectLibraryTitle: document.getElementById("projectLibraryTitle"),
+  projectLibraryCount: document.getElementById("projectLibraryCount"),
+  workspaceTitle: document.getElementById("workspaceTitle"),
+  exitProjectButton: document.getElementById("exitProjectButton"),
   canvas: document.getElementById("annotationCanvas"),
   stageShell: document.getElementById("stageShell"),
   emptyState: document.getElementById("emptyState"),
@@ -115,10 +135,7 @@ const elements = {
   openImageButton: document.getElementById("openImageButton"),
   openFolderButton: document.getElementById("openFolderButton"),
   openZipButton: document.getElementById("openZipButton"),
-  emptyOpenButton: document.getElementById("emptyOpenButton"),
   projectSummary: document.getElementById("projectSummary"),
-  sourceDisclosure: document.getElementById("sourceDisclosure"),
-  sourceDisclosureLabel: document.getElementById("sourceDisclosureLabel"),
   imageWorkflowSection: document.getElementById("imageWorkflowSection"),
   imageQueueDisclosure: document.getElementById("imageQueueDisclosure"),
   imageQueueSummary: document.getElementById("imageQueueSummary"),
@@ -173,7 +190,7 @@ const elements = {
 
 const ctx = elements.canvas.getContext("2d");
 let drawFrameId = null;
-let renderedSidebarSourceKey;
+let renderedWorkspaceProjectKey;
 
 function getCurrentImageSize() {
   return getImageSize(state.image);
@@ -263,8 +280,164 @@ function getShapeName(closed) {
 }
 
 function setStatus(message, isError = false) {
-  elements.statusText.textContent = message;
-  elements.statusText.style.color = isError ? "var(--hot)" : "var(--muted)";
+  const target = state.view === "hub" ? elements.hubStatusText : elements.statusText;
+  target.textContent = message;
+  target.style.color = isError ? "var(--hot)" : "var(--muted)";
+}
+
+function setView(view) {
+  state.view = view;
+  const hubVisible = view === "hub";
+  elements.projectHubView.hidden = !hubVisible;
+  elements.annotationWorkspaceView.hidden = hubVisible;
+  document.title = hubVisible
+    ? "Face Contour Lab"
+    : `${state.project?.name || "Opening project"} — Face Contour Lab`;
+}
+
+function getBareLocation() {
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+function captureRouteRequest() {
+  return {
+    routeEpoch: state.routeEpoch,
+    hash: window.location.hash,
+  };
+}
+
+function isRouteRequestCurrent(routeRequest) {
+  return (
+    routeRequest?.routeEpoch === state.routeEpoch &&
+    routeRequest.hash === window.location.hash
+  );
+}
+
+function getProjectSourceLabel(sourceType) {
+  return (
+    {
+      folder: "Folder",
+      zip: "ZIP",
+      files: "Image files",
+      drop: "Image files",
+      legacy: "Recovered image",
+    }[sourceType] || "Image set"
+  );
+}
+
+function formatProjectTimestamp(value) {
+  const date = new Date(value || 0);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown edit time";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function renderProjectLibrary() {
+  const projects = state.hubProjects;
+  const hasReadError = state.hubLibraryStatus === "error";
+  elements.projectLibraryCount.textContent = `${projects.length} ${
+    projects.length === 1 ? "project" : "projects"
+  }`;
+  elements.projectList.innerHTML = "";
+  elements.projectListEmpty.hidden = projects.length > 0 || hasReadError;
+  if (hasReadError) {
+    elements.projectLibraryCount.textContent = "Unavailable";
+    const errorState = document.createElement("div");
+    errorState.className = "project-list-empty";
+    const title = document.createElement("strong");
+    title.textContent = "Projects could not be read";
+    const detail = document.createElement("span");
+    detail.textContent = "The browser did not delete them. Refresh after closing any older app tabs.";
+    errorState.append(title, detail);
+    elements.projectList.appendChild(errorState);
+    return;
+  }
+  projects.forEach((project) => {
+    const progress = getProgress(project.images || []);
+    const card = document.createElement("article");
+    card.className = "project-card";
+
+    const main = document.createElement("div");
+    main.className = "project-card-main";
+    const name = document.createElement("h3");
+    name.className = "project-card-name";
+    name.title = project.name || "Untitled project";
+    name.textContent = project.name || "Untitled project";
+
+    const meta = document.createElement("div");
+    meta.className = "project-card-meta";
+    const source = document.createElement("span");
+    source.textContent = getProjectSourceLabel(project.source?.type);
+    const imageCount = document.createElement("span");
+    imageCount.textContent = `${progress.total} ${progress.total === 1 ? "image" : "images"}`;
+    const edited = document.createElement("time");
+    edited.dateTime = project.updatedAt || "";
+    edited.textContent = `Edited ${formatProjectTimestamp(project.updatedAt)}`;
+    meta.append(source, imageCount, edited);
+
+    const progressLine = document.createElement("div");
+    progressLine.className = "project-card-progress";
+    const progressParts = [`${progress.done} done`];
+    if (progress.in_progress) {
+      progressParts.push(`${progress.in_progress} active`);
+    }
+    if (progress.needs_review) {
+      progressParts.push(`${progress.needs_review} review`);
+    }
+    if (progress.skipped) {
+      progressParts.push(`${progress.skipped} skipped`);
+    }
+    progressLine.textContent = progressParts.join(" · ");
+    main.append(name, meta, progressLine);
+
+    const actions = document.createElement("div");
+    actions.className = "project-card-actions";
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "open-project-button";
+    openButton.textContent = progress.done || progress.in_progress ? "Continue" : "Open project";
+    openButton.disabled = state.projectOperationBusy;
+    openButton.addEventListener("click", () => navigateToProject(project.localProjectKey));
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "delete-project-button";
+    deleteButton.textContent = "Delete local copy";
+    deleteButton.disabled = state.projectOperationBusy;
+    deleteButton.setAttribute("aria-label", `Delete local copy of ${project.name || "untitled project"}`);
+    deleteButton.addEventListener("click", () => deleteProjectFromHub(project));
+    actions.append(openButton, deleteButton);
+    card.append(main, actions);
+    elements.projectList.appendChild(card);
+  });
+}
+
+async function refreshProjectLibrary() {
+  state.hubLibraryStatus = "loading";
+  renderProjectLibrary();
+  state.hubProjects = await storage.listLocalProjects();
+  state.hubLibraryStatus = "ready";
+  renderProjectLibrary();
+}
+
+function setProjectOperationBusy(busy) {
+  state.projectOperationBusy = busy;
+  updateCommandState();
+  if (!busy && state.routeRetryPending) {
+    state.routeRetryPending = false;
+    window.queueMicrotask(() => {
+      handleRouteChange().catch((error) => {
+        console.error("Deferred route change could not be completed.", error);
+        setStatus("Navigation could not be completed.", true);
+      });
+    });
+  }
 }
 
 function putStoredImage(dataUrl) {
@@ -277,14 +450,6 @@ function getStoredImage() {
 
 function deleteStoredImage() {
   return storage.deleteStoredImage();
-}
-
-function getStoredProject() {
-  return storage.getCurrentProject();
-}
-
-function clearStoredProjectData() {
-  return storage.clearCurrentProjectData();
 }
 
 function clearStoredDraft() {
@@ -300,14 +465,6 @@ function clearStoredDraft() {
   deleteStoredImage().catch((error) => {
     console.warn("Stored draft image could not be cleared.", error);
   });
-}
-
-async function clearStoredProject() {
-  try {
-    await clearStoredProjectData();
-  } catch (error) {
-    console.warn("Stored image set could not be cleared.", error);
-  }
 }
 
 function buildStoredDraft() {
@@ -550,7 +707,7 @@ function queueProjectSave() {
     if (snapshot.generation !== state.projectGeneration) {
       return { stale: true };
     }
-    await storage.putProjectSnapshot({ project: snapshot.project, image: snapshot.image });
+    await storage.putLocalProjectSnapshot({ project: snapshot.project, image: snapshot.image });
     return { stale: false };
   })
     .then((result) => {
@@ -618,6 +775,42 @@ function resetProjectSaveTracking() {
   state.projectSaveInFlight = 0;
   state.draftSaveBlocked = false;
   setProjectSaveStatus(state.project ? "saved" : "idle");
+}
+
+function clearWorkspaceState() {
+  if (state.draftSaveTimer) {
+    window.clearTimeout(state.draftSaveTimer);
+    state.draftSaveTimer = null;
+  }
+  state.projectGeneration += 1;
+  state.projectWriteTail = Promise.resolve();
+  state.project = null;
+  state.currentImageId = null;
+  state.image = null;
+  state.imageDataUrl = "";
+  state.imagePersisted = false;
+  state.fileName = "";
+  state.contours = [];
+  state.selectedId = null;
+  state.draftPoints = [];
+  state.hoverPoint = null;
+  state.activeLabel = "face_outline";
+  state.mode = "draw";
+  state.drawClosed = true;
+  state.softDrag = true;
+  state.showPoints = false;
+  state.softRadius = DEFAULT_SOFT_RADIUS;
+  state.scale = 1;
+  state.fitScale = 1;
+  state.imageZoom = 1;
+  state.spacePressed = false;
+  state.interaction = null;
+  state.undoStack = [];
+  state.redoStack = [];
+  state.annotationImportReport = null;
+  renderedWorkspaceProjectKey = undefined;
+  resetProjectSaveTracking();
+  renderAll();
 }
 
 function persistAnnotationChange() {
@@ -772,25 +965,19 @@ function hitLabel(point) {
 function syncSidebarHierarchy() {
   const hasProject = Boolean(state.project);
   const hasImage = Boolean(state.image);
-  const sourceKey =
-    state.project?.localWriteToken || (hasProject ? "image-set" : hasImage ? "legacy-image" : null);
+  const projectKey = state.project?.localProjectKey || null;
 
-  if (sourceKey !== renderedSidebarSourceKey) {
-    elements.sourceDisclosure.open = !sourceKey;
+  if (projectKey !== renderedWorkspaceProjectKey) {
     elements.imageQueueDisclosure.open = false;
     elements.moreActionsDisclosure.open = false;
-    renderedSidebarSourceKey = sourceKey;
+    renderedWorkspaceProjectKey = projectKey;
   }
 
-  elements.projectSummary.hidden = !hasProject;
   elements.imageWorkflowSection.hidden = !hasProject;
   elements.annotationControls.hidden = !hasImage;
   elements.actionsSection.hidden = !hasImage;
   elements.drawToolsSection.hidden = !hasImage || state.mode !== "draw";
   elements.refineToolsSection.hidden = !hasImage || state.mode !== "refine";
-  elements.sourceDisclosureLabel.textContent = sourceKey
-    ? "Open or replace image set"
-    : "Open image set";
 }
 
 function syncModeControls() {
@@ -1012,7 +1199,10 @@ function updateCommandState() {
   elements.openImageButton.disabled = busy;
   elements.openFolderButton.disabled = busy;
   elements.openZipButton.disabled = busy;
-  elements.emptyOpenButton.disabled = busy;
+  elements.projectList.querySelectorAll("button").forEach((button) => {
+    button.disabled = busy;
+  });
+  elements.exitProjectButton.disabled = busy || !state.project;
   elements.exportAnnotationsButton.disabled = !state.project || busy;
   elements.importAnnotationsButton.disabled = !state.image || busy;
   elements.finishDraftButton.disabled =
@@ -1482,14 +1672,14 @@ function findDuplicateImageSourcePath(sources) {
   return null;
 }
 
-async function createProjectImageFromSource({ source, index }) {
+async function createProjectImageFromSource({ source, index, localProjectKey }) {
   const { file, path } = source;
   const dataUrl = await readImageFileAsDataUrl(file);
   const image = await loadImageElement(dataUrl);
   assertAnnotatableImage(image, file.name);
   const contours = buildInitialFeatureTemplateContours(image);
   return createProjectImage({
-    id: createImageId(index),
+    id: createImageId({ localProjectKey, index }),
     name: file.name,
     path,
     width: image.naturalWidth,
@@ -1508,7 +1698,10 @@ async function loadProjectImageRecord(imageRecord, options = {}) {
     ? { dataUrl: options.dataUrl }
     : imageRecord.dataUrl
     ? { dataUrl: imageRecord.dataUrl }
-    : await storage.getProjectImageAsset(imageRecord.id);
+    : await storage.getLocalProjectImageAsset(
+        state.project?.localProjectKey,
+        imageRecord.id,
+      );
   if (!storedAsset?.dataUrl) {
     setStatus("Stored image data is missing. Reopen the image batch to continue.", true);
     return false;
@@ -1540,7 +1733,10 @@ async function stageProjectImageRecord(imageRecord) {
   }
   const storedAsset = imageRecord.dataUrl
     ? { dataUrl: imageRecord.dataUrl }
-    : await storage.getProjectImageAsset(imageRecord.id);
+    : await storage.getLocalProjectImageAsset(
+        state.project?.localProjectKey,
+        imageRecord.id,
+      );
   if (!storedAsset?.dataUrl) {
     throw new Error(`Stored source image is missing for ${imageRecord.path || imageRecord.name}.`);
   }
@@ -1570,7 +1766,7 @@ function getNewProjectStorageWarning(fileCount, plan) {
   return (
     `Browser storage may be too small for ${fileCount} images: ` +
     `needs about ${formatGigabytes(plan.requiredBytes)}, ` +
-    `${formatGigabytes(plan.availableBytes)} free. ${suggestion} You can still try this import.`
+    `${formatGigabytes(plan.availableBytes)} free. ${suggestion}`
   );
 }
 
@@ -1586,58 +1782,40 @@ async function planImportStorageForFiles(files) {
       quota: estimate.quota,
     });
   } catch (error) {
-    // A failed precheck must not block importing; persistProjectNow still reports real
-    // write failures. Logged so a later "could not be saved" error can be traced here.
+    // A failed estimate must not block an otherwise atomic import. The create
+    // transaction still reports a real quota failure without changing the library.
     console.warn("Storage estimate failed; importing without a quota precheck.", error);
     return null;
   }
 }
 
-async function replaceActiveProject(preparedProject, successStatus) {
-  if (state.draftSaveTimer) {
-    window.clearTimeout(state.draftSaveTimer);
-    state.draftSaveTimer = null;
+async function activateCreatedProject(preparedProject, successStatus, routeRequest) {
+  await storage.createLocalProjectData(preparedProject);
+  if (!isRouteRequestCurrent(routeRequest)) {
+    // The import still commits atomically, but a newer browser navigation owns
+    // the visible route. Keep its hash intact and process it after this operation.
+    state.routeRetryPending = true;
+    return false;
   }
-  // All local image-set writes share one tail. Waiting here and then advancing the
-  // generation prevents an older autosave from writing after replacement.
-  await state.projectWriteTail;
-  state.projectGeneration += 1;
-  await enqueueProjectWrite(() => storage.replaceCurrentProjectData(preparedProject));
-
+  clearWorkspaceState();
   state.project = releaseProjectImageAssets(preparedProject);
   state.currentImageId = state.project.currentImageId;
-  clearStoredDraft();
   resetProjectSaveTracking();
-  const loaded = await loadProjectImageRecord(getCurrentImage(preparedProject), {
+  setView("workspace");
+  window.history.pushState(null, "", buildProjectHash(preparedProject.localProjectKey));
+  const currentImage = getCurrentImage(preparedProject);
+  const loaded = await loadProjectImageRecord(currentImage, {
+    dataUrl: currentImage?.dataUrl,
     status: successStatus,
   });
   if (!loaded) {
-    console.error("The image set was stored, but its current image could not be displayed.", {
+    console.error("The local project was stored, but its current image could not be displayed.", {
+      localProjectKey: state.project.localProjectKey,
       currentImageId: state.project.currentImageId,
     });
-    setStatus("Image set saved locally, but its current image could not be displayed. Refresh to retry.", true);
+    setStatus("Project saved locally, but its current image could not be displayed. Refresh to retry.", true);
   }
   return loaded;
-}
-
-function imageSetHasProgress(imageSet = state.project) {
-  return Boolean(
-    imageSet?.images?.some((image) => image.status !== "unlabeled") ||
-      state.projectDirtyRevision > state.projectSavedRevision,
-  );
-}
-
-function confirmImageSetReplacement() {
-  if (!imageSetHasProgress()) {
-    return true;
-  }
-  const confirmed = window.confirm(
-    "Open a different image set? Export annotations first if you need a portable copy of the current work.",
-  );
-  if (!confirmed) {
-    setStatus("Opening another image set was cancelled.");
-  }
-  return confirmed;
 }
 
 function getFolderSourceName(fileList) {
@@ -1647,7 +1825,7 @@ function getFolderSourceName(fileList) {
   return firstPath?.replaceAll("\\", "/").split("/")[0] || "Image folder";
 }
 
-async function openImageSources({ sources, sourceType, name, replacementConfirmed = false }) {
+async function openImageSources({ sources, sourceType, name, routeRequest }) {
   if (!sources.length) {
     setStatus("Choose at least one image file.", true);
     return;
@@ -1664,65 +1842,54 @@ async function openImageSources({ sources, sourceType, name, replacementConfirme
     );
     return;
   }
-  if (state.projectOperationBusy) {
+  if (state.projectOperationBusy || state.view !== "hub") {
     return;
   }
-  if (!replacementConfirmed && !confirmImageSetReplacement()) {
-    return;
-  }
-  state.projectOperationBusy = true;
-  updateCommandState();
+  setProjectOperationBusy(true);
   try {
-    // Finish every healthy pending write before decoding the new set. If storage
-    // was already blocked, the visible warning/export recovery path remains active.
-    let localSaveWarning = "";
-    try {
-      await flushProjectSaves();
-    } catch (error) {
-      // Replacement has already been explicitly confirmed. A previously blocked
-      // local store must not trap the user in the current set after they exported
-      // a portable JSON; the atomic replacement below is still safe to attempt.
-      console.warn("The previous image set could not be fully saved before replacement.", error);
-      localSaveWarning = "Previous local save is still failing. Keep its exported JSON.";
-    }
     const files = sources.map((source) => source.file);
     const storagePlan = await planImportStorageForFiles(files);
-    const storageWarning =
-      storagePlan && !storagePlan.fits
-        ? getNewProjectStorageWarning(files.length, storagePlan)
-        : "";
-    setStatus(
-      storageWarning ||
-        localSaveWarning ||
-        `Importing ${files.length} image${files.length === 1 ? "" : "s"}...`,
-      Boolean(storageWarning || localSaveWarning),
-    );
+    if (storagePlan && !storagePlan.fits) {
+      setStatus(getNewProjectStorageWarning(files.length, storagePlan), true);
+      return;
+    }
+    setStatus(`Creating project from ${files.length} image${files.length === 1 ? "" : "s"}…`);
+    const localProjectKey = createLocalProjectKey();
     const images = [];
     for (let index = 0; index < sources.length; index += 1) {
-      images.push(await createProjectImageFromSource({ source: sources[index], index }));
+      images.push(
+        await createProjectImageFromSource({
+          source: sources[index],
+          index,
+          localProjectKey,
+        }),
+      );
     }
     const preparedProject = createAnnotationProject({
+      localProjectKey,
       name: name || (files.length === 1 ? files[0].name : `${files.length} images`),
       images,
       taskSchema: buildTaskSchema(LABELS),
       sourceType,
       preferences: buildProjectPreferences(),
     });
-    await replaceActiveProject(
+    await activateCreatedProject(
       preparedProject,
-      `${files.length} image${files.length === 1 ? "" : "s"} opened.`,
+      `Project created with ${files.length} image${files.length === 1 ? "" : "s"}.`,
+      routeRequest,
     );
     state.annotationImportReport = null;
   } catch (error) {
     console.error(error);
-    setStatus(error instanceof Error ? error.message : "Image set could not be opened.", true);
+    setStatus(error instanceof Error ? error.message : "Project could not be created.", true);
   } finally {
-    state.projectOperationBusy = false;
+    setProjectOperationBusy(false);
     renderAll();
   }
 }
 
 async function openProjectFromFiles(fileList, sourceType = "files") {
+  const routeRequest = captureRouteRequest();
   let sources;
   try {
     sources = getImageSources(fileList, { stripSharedRoot: sourceType === "folder" });
@@ -1737,30 +1904,30 @@ async function openProjectFromFiles(fileList, sourceType = "files") {
       : sources.length === 1
         ? sources[0].file.name
         : `${sources.length} images`;
-  await openImageSources({ sources, sourceType, name });
+  await openImageSources({ sources, sourceType, name, routeRequest });
 }
 
 async function openProjectFromZip(file) {
-  if (!file || state.projectOperationBusy || !confirmImageSetReplacement()) {
+  const routeRequest = captureRouteRequest();
+  if (!file || state.projectOperationBusy || state.view !== "hub") {
     return;
   }
-  state.projectOperationBusy = true;
-  updateCommandState();
+  setProjectOperationBusy(true);
   setStatus(`Reading ${file.name}…`);
   try {
     const sources = await readImageSourcesFromZip(file);
-    state.projectOperationBusy = false;
+    setProjectOperationBusy(false);
     await openImageSources({
       sources,
       sourceType: "zip",
       name: file.name.replace(/\.zip$/i, "") || "Image ZIP",
-      replacementConfirmed: true,
+      routeRequest,
     });
   } catch (error) {
     console.error("Image ZIP could not be opened.", error);
     setStatus(error instanceof Error ? error.message : "Image ZIP could not be opened.", true);
   } finally {
-    state.projectOperationBusy = false;
+    setProjectOperationBusy(false);
     renderAll();
   }
 }
@@ -1786,9 +1953,24 @@ async function switchToProjectImage(imageId) {
     // user can keep working while the persistent-save warning remains visible.
     console.error("Could not persist before switching images.", error);
   }
-  const loaded = await loadProjectImageRecord(imageRecord);
-  if (loaded) {
-    scheduleDraftSave();
+  try {
+    const loaded = await loadProjectImageRecord(imageRecord);
+    if (loaded) {
+      scheduleDraftSave();
+    }
+  } catch (error) {
+    console.error("Project image could not be loaded.", error);
+    if (
+      error?.code === "LOCAL_PROJECT_DELETED" ||
+      error?.code === "STALE_LOCAL_PROJECT_WRITE"
+    ) {
+      state.draftSaveBlocked = true;
+      setProjectSaveStatus("failed");
+    }
+    setStatus(
+      error instanceof Error ? error.message : "Project image could not be loaded.",
+      true,
+    );
   }
 }
 
@@ -1844,105 +2026,310 @@ async function setCurrentImageStatus(status) {
   setStatus(`${imageRecord.path || imageRecord.name} marked ${getStatusLabel(status)}.`);
 }
 
-async function restoreDraft() {
-  let restoringProject = false;
+async function showProjectHub({ message = "Choose a project to continue.", isError = false } = {}) {
+  setView("hub");
   try {
-    if (new URLSearchParams(window.location.search).get("resetDraft") === "1") {
-      clearStoredDraft();
-      await clearStoredProject();
-      setStatus("Saved draft cleared.");
+    await refreshProjectLibrary();
+    setStatus(message, isError);
+  } catch (error) {
+    console.error("Local projects could not be listed.", error);
+    state.hubProjects = [];
+    state.hubLibraryStatus = "error";
+    renderProjectLibrary();
+    setStatus("Local projects could not be read. Their stored data was not deleted.", true);
+  }
+  elements.hubTitle.focus({ preventScroll: true });
+}
+
+async function openLocalProject(localProjectKey, routeEpoch = state.routeEpoch) {
+  if (state.projectOperationBusy) {
+    return false;
+  }
+  setProjectOperationBusy(true);
+  setView("workspace");
+  setStatus("Opening local project…");
+  try {
+    const project = await storage.getLocalProject(localProjectKey);
+    if (routeEpoch !== state.routeEpoch) {
       return false;
     }
-    const project = await getStoredProject();
-    if (project?.version === "face-contour-project-v1" && Array.isArray(project.images)) {
-      restoringProject = true;
-      const imageIds = project.images.map((image) => image.id).filter(Boolean);
-      const imageRecords = await storage.getProjectImageRecords(imageIds);
-      state.project = hydrateProjectImages(project, imageRecords);
-      const needsLocalWriteToken = !state.project.localWriteToken;
-      if (needsLocalWriteToken) {
-        state.project.localWriteToken = createLocalWriteToken();
-      }
-      state.currentImageId = project.currentImageId || project.images[0]?.id || null;
-      applyProjectPreferences(project.preferences);
-      const legacyImages = state.project.images.filter((image) => image.dataUrl);
-      const missingRecords = imageRecords.some((image) => !image);
-      if (legacyImages.length || missingRecords) {
-        const storedAssets = await storage.getProjectImageAssets(imageIds);
-        const imagesWithAssets = [];
-        for (let index = 0; index < state.project.images.length; index += 1) {
-          const image = state.project.images[index];
-          if (image.dataUrl) {
-            imagesWithAssets.push(image);
-            continue;
-          }
-          const asset = storedAssets[index];
-          if (!asset?.dataUrl) {
-            throw new Error(`Stored source image is missing for ${image.path || image.name}.`);
-          }
-          imagesWithAssets.push({ ...image, dataUrl: asset.dataUrl });
-        }
-        state.project = { ...state.project, images: imagesWithAssets };
-        await storage.replaceCurrentProjectDataIfUnchanged({
-          expectedProject: project,
-          project: state.project,
-        });
-      } else if (needsLocalWriteToken) {
-        await storage.claimCurrentProjectWriteToken({
-          expectedProject: project,
-          project: state.project,
-        });
-      }
-      state.project = releaseProjectImageAssets(state.project);
-      state.projectGeneration += 1;
-      resetProjectSaveTracking();
-      const imageRecord = getCurrentImage(state.project);
-      const restored = await loadProjectImageRecord(imageRecord, {
-        status: "Restored saved image set.",
-      });
-      if (!restored) {
-        throw new Error("Stored image-set data is missing.");
-      }
-      return true;
+    if (!project) {
+      throw new Error("This local project is not available in this browser.");
     }
-    const raw = storage.readStoredDraft(DRAFT_STORAGE_KEY);
-    if (!raw) {
+    if (!project.localWriteToken || !Array.isArray(project.images) || !project.images.length) {
+      throw new Error("This local project is incomplete and was not opened.");
+    }
+    const imageIds = project.images.map((image) => image.id);
+    const imageRecords = await storage.getLocalProjectImageRecords(
+      localProjectKey,
+      imageIds,
+    );
+    if (routeEpoch !== state.routeEpoch) {
       return false;
     }
-    if (raw.length > MAX_LEGACY_DRAFT_BYTES && raw.includes('"src"')) {
-      clearStoredDraft();
-      setStatus("Large legacy draft skipped. Reopen the image to continue.", true);
+    const hydratedProject = hydrateProjectImages(project, imageRecords);
+    clearWorkspaceState();
+    state.project = releaseProjectImageAssets(hydratedProject);
+    state.currentImageId = project.currentImageId || project.images[0].id;
+    applyProjectPreferences(project.preferences);
+    resetProjectSaveTracking();
+    setView("workspace");
+    const restored = await loadProjectImageRecord(getCurrentImage(state.project), {
+      status: "Local project opened.",
+    });
+    if (!restored) {
+      throw new Error("Stored project image data is missing or invalid.");
+    }
+    elements.workspaceTitle.focus({ preventScroll: true });
+    return true;
+  } catch (error) {
+    if (routeEpoch !== state.routeEpoch) {
+      clearWorkspaceState();
       return false;
     }
-    const draft = JSON.parse(raw);
-    if (draft?.version === 1 && typeof draft.image?.src === "string") {
-      await loadImageDataUrl(draft.image.src, draft.image.name, {
-        contours: draft.contours,
-        selectedId: draft.selectedId,
-        activeLabel: draft.activeLabel,
-        mode: draft.mode,
-        drawClosed: draft.drawClosed,
-        softDrag: draft.softDrag,
-        showPoints: draft.showPoints,
-        softRadius: draft.softRadius,
-        imageZoom: draft.imageZoom,
-        status: "Restored saved image.",
-        errorStatus: "Saved image could not be restored.",
-        clearOnError: true,
-      });
-      return true;
+    console.error("Local project could not be opened.", error);
+    clearWorkspaceState();
+    window.history.replaceState(null, "", getBareLocation());
+    await showProjectHub({
+      message: error instanceof Error ? error.message : "Local project could not be opened.",
+      isError: true,
+    });
+    return false;
+  } finally {
+    setProjectOperationBusy(false);
+    renderAll();
+  }
+}
+
+async function leaveCurrentProject({ updateHistory = true } = {}) {
+  if (!state.project || state.projectOperationBusy) {
+    return !state.project;
+  }
+  const routeRequest = updateHistory ? captureRouteRequest() : null;
+  setProjectOperationBusy(true);
+  let abandonedUnsavedChanges = false;
+  try {
+    try {
+      await flushProjectSaves();
+    } catch (error) {
+      console.error("Local saves could not be flushed before exit.", error);
+      const confirmed = window.confirm(
+        "The latest changes are not saved in this browser. Export annotation JSON first if you need them. Exit anyway and abandon those unsaved changes?",
+      );
+      if (!confirmed) {
+        setStatus("Exit cancelled. Export annotations or retry after local saving recovers.", true);
+        return false;
+      }
+      abandonedUnsavedChanges = true;
     }
-    if (draft?.version !== 2 || !draft.image?.stored) {
-      throw new Error("Stored draft has an unsupported format.");
+    clearWorkspaceState();
+    if (updateHistory) {
+      if (isRouteRequestCurrent(routeRequest)) {
+        window.history.replaceState(null, "", getBareLocation());
+      } else {
+        state.routeRetryPending = true;
+      }
     }
-    setStatus("Restoring saved image...");
+    await showProjectHub({
+      message: abandonedUnsavedChanges
+        ? "Exited without the unsaved in-memory changes."
+        : "Project saved locally and closed.",
+      isError: abandonedUnsavedChanges,
+    });
+    return true;
+  } finally {
+    setProjectOperationBusy(false);
+  }
+}
+
+async function exitCurrentProject() {
+  await leaveCurrentProject({ updateHistory: true });
+}
+
+async function navigateToProject(localProjectKey) {
+  if (state.projectOperationBusy) {
+    return;
+  }
+  window.history.pushState(null, "", buildProjectHash(localProjectKey));
+  await handleRouteChange();
+}
+
+async function deleteProjectFromHub(project) {
+  if (state.projectOperationBusy || state.view !== "hub") {
+    return;
+  }
+  const name = project.name || "Untitled project";
+  const confirmed = window.confirm(
+    `Delete the local copy of “${name}”? This removes its images and annotations from this browser only. Original files and exported JSON are not affected.`,
+  );
+  if (!confirmed) {
+    setStatus("Project deletion cancelled.");
+    return;
+  }
+  const deletedIndex = state.hubProjects.findIndex(
+    (candidate) => candidate.localProjectKey === project.localProjectKey,
+  );
+  let restoreFocus = false;
+  setProjectOperationBusy(true);
+  try {
+    const deleted = await storage.deleteLocalProject(project.localProjectKey);
+    state.hubProjects = state.hubProjects.filter(
+      (candidate) => candidate.localProjectKey !== project.localProjectKey,
+    );
+    state.hubLibraryStatus = "ready";
+    renderProjectLibrary();
+    restoreFocus = true;
+    try {
+      await refreshProjectLibrary();
+      setStatus(
+        deleted ? `Deleted the local copy of ${name}.` : `${name} was already removed.`,
+      );
+    } catch (refreshError) {
+      console.error("Project list could not be refreshed after deletion.", refreshError);
+      state.hubLibraryStatus = "ready";
+      renderProjectLibrary();
+      setStatus(
+        `Deleted the local copy of ${name}, but the project list could not be refreshed.`,
+        true,
+      );
+    }
+  } catch (error) {
+    console.error("Local project could not be deleted.", error);
+    setStatus("Project could not be deleted. Its local copy was kept.", true);
+  } finally {
+    setProjectOperationBusy(false);
+    renderProjectLibrary();
+    if (restoreFocus) {
+      const openButtons = elements.projectList.querySelectorAll(".open-project-button");
+      const focusTarget = openButtons[Math.min(Math.max(deletedIndex, 0), openButtons.length - 1)];
+      (focusTarget || elements.projectLibraryTitle).focus({ preventScroll: true });
+    }
+  }
+}
+
+async function applyRouteChange(routeEpoch) {
+  if (routeEpoch !== state.routeEpoch) {
+    return;
+  }
+  if (state.projectOperationBusy) {
+    state.routeRetryPending = true;
+    return;
+  }
+  const route = parseAppRoute(window.location.hash);
+  if (route.name === "project") {
+    if (
+      state.project?.localProjectKey === route.localProjectKey &&
+      state.view === "workspace"
+    ) {
+      return;
+    }
+    if (state.project) {
+      const previousKey = state.project.localProjectKey;
+      const left = await leaveCurrentProject({ updateHistory: false });
+      if (!left) {
+        window.history.replaceState(null, "", buildProjectHash(previousKey));
+        return;
+      }
+    }
+    if (routeEpoch !== state.routeEpoch) {
+      return;
+    }
+    await openLocalProject(route.localProjectKey, routeEpoch);
+    return;
+  }
+  if (state.project) {
+    const previousKey = state.project.localProjectKey;
+    const left = await leaveCurrentProject({ updateHistory: false });
+    if (!left) {
+      window.history.replaceState(null, "", buildProjectHash(previousKey));
+      return;
+    }
+  }
+  if (routeEpoch !== state.routeEpoch) {
+    return;
+  }
+  if (route.name === "not-found") {
+    window.history.replaceState(null, "", getBareLocation());
+    await showProjectHub({ message: "That local project link is not valid.", isError: true });
+    return;
+  }
+  await showProjectHub();
+}
+
+function handleRouteChange() {
+  const routeEpoch = state.routeEpoch + 1;
+  state.routeEpoch = routeEpoch;
+  const transition = state.routeTransitionTail.then(
+    () => applyRouteChange(routeEpoch),
+    () => applyRouteChange(routeEpoch),
+  );
+  state.routeTransitionTail = transition.catch(() => undefined);
+  return transition;
+}
+
+async function cleanupLegacyDraft() {
+  try {
+    storage.removeStoredDraft(DRAFT_STORAGE_KEY);
+  } catch (error) {
+    console.warn("Legacy draft metadata could not be cleared after migration.", error);
+  }
+  try {
+    await deleteStoredImage();
+  } catch (error) {
+    console.warn("Legacy draft image could not be cleared after migration.", error);
+  }
+}
+
+async function migrateLegacySingleImageDraft() {
+  const raw = storage.readStoredDraft(DRAFT_STORAGE_KEY);
+  if (!raw) {
+    return { migrated: false };
+  }
+  const existingProject = await storage.getLocalProject(LEGACY_DRAFT_PROJECT_KEY);
+  if (existingProject) {
+    await cleanupLegacyDraft();
+    return { migrated: false, alreadyMigrated: true };
+  }
+  if (raw.length > MAX_LEGACY_DRAFT_BYTES && raw.includes('"src"')) {
+    throw new Error("A large legacy single-image draft was kept but could not be migrated automatically.");
+  }
+  const draft = JSON.parse(raw);
+  let dataUrl;
+  if (draft?.version === 1 && typeof draft.image?.src === "string") {
+    dataUrl = draft.image.src;
+  } else if (draft?.version === 2 && draft.image?.stored) {
     const storedImage = await getStoredImage();
-    if (!storedImage?.dataUrl) {
-      throw new Error("Stored draft image is missing.");
-    }
-    await loadImageDataUrl(storedImage.dataUrl, draft.image.name, {
-      contours: draft.contours,
-      selectedId: draft.selectedId,
+    dataUrl = storedImage?.dataUrl;
+  } else {
+    throw new Error("A legacy single-image draft has an unsupported format.");
+  }
+  if (!dataUrl) {
+    throw new Error("A legacy single-image draft is missing its source image.");
+  }
+  const decodedImage = await loadImageElement(dataUrl);
+  assertAnnotatableImage(decodedImage, draft.image?.name);
+  const imageSize = getImageSize(decodedImage);
+  const contours = normalizeContoursForImage(draft.contours || [], imageSize);
+  const image = createProjectImage({
+    id: createImageId({ localProjectKey: LEGACY_DRAFT_PROJECT_KEY, index: 0 }),
+    name: draft.image?.name || "Recovered image",
+    path: draft.image?.name || "Recovered image",
+    width: decodedImage.naturalWidth,
+    height: decodedImage.naturalHeight,
+    dataUrl,
+    contours,
+    status: contours.length ? "in_progress" : "unlabeled",
+  });
+  image.selectedId = contours.some((contour) => contour.id === draft.selectedId)
+    ? draft.selectedId
+    : contours[0]?.id || null;
+  const project = createAnnotationProject({
+    localProjectKey: LEGACY_DRAFT_PROJECT_KEY,
+    name: draft.image?.name || "Recovered image",
+    images: [image],
+    taskSchema: buildTaskSchema(LABELS),
+    sourceType: "legacy",
+    preferences: {
       activeLabel: draft.activeLabel,
       mode: draft.mode,
       drawClosed: draft.drawClosed,
@@ -1950,30 +2337,11 @@ async function restoreDraft() {
       showPoints: draft.showPoints,
       softRadius: draft.softRadius,
       imageZoom: draft.imageZoom,
-      status: "Restored saved image.",
-      errorStatus: "Saved image could not be restored.",
-      clearOnError: true,
-      imageStored: true,
-      persist: false,
-    });
-    return true;
-  } catch (error) {
-    console.warn("Stored draft could not be restored.", error);
-    if (restoringProject) {
-      state.project = null;
-      state.currentImageId = null;
-      resetProjectSaveTracking();
-      renderAll();
-      setStatus("Saved image set could not be restored. Its browser storage was kept.", true);
-    } else {
-      clearStoredDraft();
-    }
-    return false;
-  }
-}
-
-function openImageFile(file) {
-  openProjectFromFiles(file ? [file] : [], "files");
+    },
+  });
+  await storage.createLocalProjectData(project);
+  await cleanupLegacyDraft();
+  return { migrated: true, localProjectKey: LEGACY_DRAFT_PROJECT_KEY };
 }
 
 function clampMoveDelta(contours, dx, dy) {
@@ -2306,7 +2674,7 @@ async function exportAnnotations() {
     setStatus("Open an image set before exporting annotations.", true);
     return;
   }
-  state.projectOperationBusy = true;
+  setProjectOperationBusy(true);
   updateCommandState();
   const startedAt = performance.now();
   let localSaveFailed = false;
@@ -2338,7 +2706,7 @@ async function exportAnnotations() {
     console.error("Annotations could not be exported.", error);
     setStatus(error instanceof Error ? error.message : "Annotations could not be exported.", true);
   } finally {
-    state.projectOperationBusy = false;
+    setProjectOperationBusy(false);
     renderAll();
   }
 }
@@ -2400,7 +2768,7 @@ async function replaceActiveAnnotations(preparedImageSet) {
   }
   await state.projectWriteTail;
   state.projectGeneration += 1;
-  await enqueueProjectWrite(() => storage.replaceCurrentProjectAnnotations(preparedImageSet));
+  await enqueueProjectWrite(() => storage.replaceLocalProjectAnnotations(preparedImageSet));
   state.project = preparedImageSet;
   resetProjectSaveTracking();
   const loaded = await loadProjectImageRecord(preparedCurrentImage, {
@@ -2421,7 +2789,7 @@ async function importAnnotations(file) {
     setStatus("Open the matching image folder or ZIP before importing annotations.", true);
     return;
   }
-  state.projectOperationBusy = true;
+  setProjectOperationBusy(true);
   state.annotationImportReport = null;
   renderAnnotationImportReport();
   updateCommandState();
@@ -2488,7 +2856,7 @@ async function importAnnotations(file) {
     console.error("Annotations could not be imported.", error);
     setStatus(error instanceof Error ? error.message : "Annotations could not be imported.", true);
   } finally {
-    state.projectOperationBusy = false;
+    setProjectOperationBusy(false);
     renderAll();
   }
 }
@@ -2528,7 +2896,7 @@ function wireEvents() {
   elements.openImageButton.addEventListener("click", () => elements.imageInput.click());
   elements.openFolderButton.addEventListener("click", () => elements.folderInput.click());
   elements.openZipButton.addEventListener("click", () => elements.zipInput.click());
-  elements.emptyOpenButton.addEventListener("click", () => elements.folderInput.click());
+  elements.exitProjectButton.addEventListener("click", exitCurrentProject);
   elements.imageInput.addEventListener("change", (event) => {
     openProjectFromFiles(event.target.files, "files");
     event.target.value = "";
@@ -2624,8 +2992,15 @@ function wireEvents() {
 
   window.addEventListener("resize", fitCanvas);
   window.addEventListener("beforeunload", handleBeforeUnload);
+  window.addEventListener("hashchange", () => {
+    handleRouteChange().catch((error) => {
+      console.error("Route change could not be completed.", error);
+      setStatus("Navigation could not be completed.", true);
+    });
+  });
   window.addEventListener("keydown", (event) => {
     if (
+      state.view !== "workspace" ||
       state.projectOperationBusy ||
       isInteractiveShortcutTarget(event.target)
     ) {
@@ -2669,26 +3044,6 @@ function wireEvents() {
     }
   });
 
-  ["dragenter", "dragover"].forEach((eventName) => {
-    elements.stageShell.addEventListener(eventName, (event) => {
-      event.preventDefault();
-      elements.stageShell.classList.add("is-drag-over");
-    });
-  });
-  ["dragleave", "drop"].forEach((eventName) => {
-    elements.stageShell.addEventListener(eventName, (event) => {
-      event.preventDefault();
-      elements.stageShell.classList.remove("is-drag-over");
-    });
-  });
-  elements.stageShell.addEventListener("drop", (event) => {
-    const files = Array.from(event.dataTransfer.files || []);
-    if (files.length === 1 && /\.zip$/i.test(files[0].name)) {
-      openProjectFromZip(files[0]);
-    } else {
-      openProjectFromFiles(files, "drop");
-    }
-  });
 }
 
 async function ensurePersistentStorage() {
@@ -2696,6 +3051,14 @@ async function ensurePersistentStorage() {
     const { supported, persisted } = await storage.requestPersistentStorage();
     state.storagePersisted = supported ? persisted : false;
     renderProjectSaveState();
+    const title = document.createElement("strong");
+    title.textContent = persisted ? "Saved locally in this browser" : "Stored in this browser only";
+    const detail = document.createTextNode(
+      persisted
+        ? " Clearing site data still removes local projects, so export annotation JSON for portable backups."
+        : " The browser may clear local projects. Export annotation JSON for a portable backup.",
+    );
+    elements.hubStorageNote.replaceChildren(title, detail);
     if (supported && !persisted) {
       // Best-effort: annotating still works, the store is just evictable. Warn instead of
       // interrupting startup, so a later unexplained data loss has a trace to look at.
@@ -2704,19 +3067,73 @@ async function ensurePersistentStorage() {
   } catch (error) {
     state.storagePersisted = false;
     renderProjectSaveState();
+    const title = document.createElement("strong");
+    title.textContent = "Stored in this browser only";
+    elements.hubStorageNote.replaceChildren(
+      title,
+      document.createTextNode(
+        " Persistence could not be confirmed. Export annotation JSON for a portable backup.",
+      ),
+    );
     console.warn("Persistent storage could not be requested.", error);
   }
 }
 
+async function runLocalStorageMigrations() {
+  const results = [];
+  const resetDraft = new URLSearchParams(window.location.search).get("resetDraft") === "1";
+  if (resetDraft) {
+    await cleanupLegacyDraft();
+    const url = new URL(window.location.href);
+    url.searchParams.delete("resetDraft");
+    window.history.replaceState(
+      null,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+    results.push("Legacy single-image draft cleared; local projects were kept.");
+  }
+  const startedAt = performance.now();
+  try {
+    const result = await storage.migrateLegacyCurrentProject();
+    if (result.migrated) {
+      results.push("Recovered the previous image set as a local project.");
+      console.info("Legacy local-project migration completed.", {
+        imageCount: result.imageCount,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+    }
+  } catch (error) {
+    console.error("Legacy local-project migration failed; legacy data was kept.", error);
+    results.push("Previous local work could not be migrated. Its stored data was kept; refresh to retry.");
+  }
+  if (!resetDraft) {
+    try {
+      const result = await migrateLegacySingleImageDraft();
+      if (result.migrated) {
+        results.push("Recovered a previous single-image draft as a local project.");
+      }
+    } catch (error) {
+      console.error("Legacy single-image draft migration failed; draft data was kept.", error);
+      results.push("A previous single-image draft could not be migrated and was kept for retry.");
+    }
+  }
+  return results;
+}
+
 async function init() {
+  setView("hub");
   configureSoftRadiusInput();
   renderLabels();
   renderAll();
   wireEvents();
   await ensurePersistentStorage();
-  if (!(await restoreDraft())) {
-    drawCanvas();
+  const migrationMessages = await runLocalStorageMigrations();
+  await handleRouteChange();
+  if (migrationMessages.length && state.view === "hub") {
+    setStatus(migrationMessages.join(" "), migrationMessages.some((message) => /could not/i.test(message)));
   }
+  drawCanvas();
 }
 
 init().catch((error) => {
