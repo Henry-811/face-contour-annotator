@@ -68,6 +68,11 @@ import {
   hitContourLabel,
 } from "./renderer.js";
 import { buildDefaultFeatureContours } from "./templates.js";
+import {
+  FOLDER_PROJECT_PREFIX, FOLDER_IMAGE_KIND, FOLDER_QUEUE_PAGE_SIZE, MAX_FOLDER_IMAGE_PIXELS,
+  supportsFolderWorkspace, ensureFolderPermission, openFolderWorkspace,
+  listFolderBookmarks, rememberFolderWorkspace, forgetFolderBookmark, validateFolderImage,
+} from "./folder-workspace.js";
 const state = {
   view: "hub",
   hubProjects: [],
@@ -109,6 +114,10 @@ const state = {
   storagePersisted: null,
   projectOperationBusy: false,
   annotationImportReport: null,
+  folderWorkspace: null,
+  pendingSourceHandle: null,
+  folderBookmarks: [],
+  queuePage: 0,
 };
 
 const LEGACY_DRAFT_PROJECT_KEY = "legacy-single-image-draft";
@@ -186,6 +195,17 @@ const elements = {
   clearButton: document.getElementById("clearButton"),
   finishDraftButton: document.getElementById("finishDraftButton"),
   cancelDraftButton: document.getElementById("cancelDraftButton"),
+  openDirectoryButton: document.getElementById("openDirectoryButton"),
+  chooseOutputButton: document.getElementById("chooseOutputButton"),
+  directorySelection: document.getElementById("directorySelection"),
+  folderSupportNote: document.getElementById("folderSupportNote"),
+  saveNowButton: document.getElementById("saveNowButton"),
+  folderOutputLocation: document.getElementById("folderOutputLocation"),
+  queuePreviousPage: document.getElementById("queuePreviousPage"),
+  queueNextPage: document.getElementById("queueNextPage"),
+  queuePageLabel: document.getElementById("queuePageLabel"),
+  queuePagination: document.getElementById("queuePagination"),
+  annotationImportHelp: document.getElementById("annotationImportHelp"),
 };
 
 const ctx = elements.canvas.getContext("2d");
@@ -321,6 +341,7 @@ function getProjectSourceLabel(sourceType) {
       files: "Image files",
       drop: "Image files",
       legacy: "Recovered image",
+      directory: "Local folder · files on disk",
     }[sourceType] || "Image set"
   );
 }
@@ -404,7 +425,8 @@ function renderProjectLibrary() {
     openButton.className = "open-project-button";
     openButton.textContent = progress.done || progress.in_progress ? "Continue" : "Open project";
     openButton.disabled = state.projectOperationBusy;
-    openButton.addEventListener("click", () => navigateToProject(project.localProjectKey));
+    openButton.addEventListener("click", () => project.source?.type === "directory"
+      ? reconnectFolderProject(project) : navigateToProject(project.localProjectKey));
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
     deleteButton.className = "delete-project-button";
@@ -412,6 +434,10 @@ function renderProjectLibrary() {
     deleteButton.disabled = state.projectOperationBusy;
     deleteButton.setAttribute("aria-label", `Delete local copy of ${project.name || "untitled project"}`);
     deleteButton.addEventListener("click", () => deleteProjectFromHub(project));
+    if (project.source?.type === "directory") {
+      deleteButton.textContent = "Forget shortcut";
+      deleteButton.setAttribute("aria-label", `Forget shortcut to ${project.name}; keep files on disk`);
+    }
     actions.append(openButton, deleteButton);
     card.append(main, actions);
     elements.projectList.appendChild(card);
@@ -422,11 +448,24 @@ async function refreshProjectLibrary() {
   state.hubLibraryStatus = "loading";
   renderProjectLibrary();
   state.hubProjects = await storage.listLocalProjects();
+  try {
+    state.folderBookmarks = await listFolderBookmarks();
+  } catch (error) {
+    console.warn("Recent folder shortcuts could not be read; output files are unaffected.", error);
+    state.folderBookmarks = [];
+  }
+  state.hubProjects = [...state.folderBookmarks, ...state.hubProjects];
   state.hubLibraryStatus = "ready";
   renderProjectLibrary();
 }
 
 function setProjectOperationBusy(busy) {
+  if (busy && !state.projectOperationBusy && state.interaction?.previousSnapshot) {
+    // A navigation/transfer may start before pointerup (e.g. browser Back).
+    // Include the in-progress drag in the save barrier before disabling editing.
+    commitChange(state.interaction.previousSnapshot);
+    state.interaction = null;
+  }
   state.projectOperationBusy = busy;
   updateCommandState();
   if (!busy && state.routeRetryPending) {
@@ -625,6 +664,9 @@ function syncCurrentProjectImage() {
   imageRecord.height = state.image.naturalHeight;
   imageRecord.contours = cloneContours();
   imageRecord.selectedId = state.selectedId;
+  if (state.folderWorkspace) {
+    imageRecord.draft = { points: state.draftPoints.map((point) => ({ ...point })), label: state.activeLabel, closed: state.drawClosed };
+  }
   imageRecord.updatedAt = new Date().toISOString();
   state.project.currentImageId = imageRecord.id;
   state.project.preferences = buildProjectPreferences();
@@ -639,25 +681,29 @@ function renderProjectSaveState() {
   let indicatorState = "idle";
   if (state.project) {
     if (state.projectSaveStatus === "failed" || state.draftSaveBlocked) {
-      message = "Local save failed — export annotations now";
+      message = state.folderWorkspace ? "Folder save failed — retry or download current JSON" : "Local save failed — export annotations now";
       indicatorState = "failed";
+    } else if (state.interaction && state.interaction.type !== "pan") {
+      message = "Editing — release to save";
+      indicatorState = "saving";
     } else if (
       state.projectSaveInFlight > 0 ||
       state.draftSaveTimer ||
       state.projectDirtyRevision > state.projectSavedRevision
     ) {
-      message = "Saving locally…";
+      message = state.folderWorkspace ? "Saving to output folder…" : "Saving locally…";
       indicatorState = "saving";
     } else {
-      message = "Saved locally";
+      message = state.folderWorkspace ? "Saved to output folder" : "Saved locally";
       indicatorState = "saved";
     }
-    if (state.storagePersisted === false) {
+    if (!state.folderWorkspace && state.storagePersisted === false) {
       message += " · browser may clear it";
     }
   }
   elements.projectSaveState.textContent = message;
   elements.projectSaveState.dataset.state = indicatorState;
+  if (elements.saveNowButton) elements.saveNowButton.textContent = indicatorState === "failed" ? "Retry save" : "Save now";
 }
 
 function setProjectSaveStatus(status) {
@@ -681,6 +727,14 @@ function enqueueProjectWrite(operation) {
 
 function captureProjectSnapshot() {
   syncCurrentProjectImage();
+  if (state.folderWorkspace) {
+    return {
+      generation: state.projectGeneration, revision: state.projectDirtyRevision,
+      folderWorkspace: state.folderWorkspace,
+      image: structuredClone(getCurrentProjectImageRecord()),
+      preferences: buildProjectPreferences(),
+    };
+  }
   const project = structuredClone(state.project);
   return {
     generation: state.projectGeneration,
@@ -707,7 +761,11 @@ function queueProjectSave() {
     if (snapshot.generation !== state.projectGeneration) {
       return { stale: true };
     }
-    await storage.putLocalProjectSnapshot({ project: snapshot.project, image: snapshot.image });
+    if (snapshot.folderWorkspace) {
+      await snapshot.folderWorkspace.saveImage({ image: snapshot.image, preferences: snapshot.preferences });
+    } else {
+      await storage.putLocalProjectSnapshot({ project: snapshot.project, image: snapshot.image });
+    }
     return { stale: false };
   })
     .then((result) => {
@@ -725,7 +783,7 @@ function queueProjectSave() {
         setProjectSaveStatus("failed");
         console.error("Image-set snapshot could not be saved.", error);
         setStatus(
-          "Local save failed. Export annotations now to keep the latest work.",
+          state.folderWorkspace ? (error.message || "Folder save failed. Download current JSON to keep the latest work.") : "Local save failed. Export annotations now to keep the latest work.",
           true,
         );
       }
@@ -783,6 +841,10 @@ function clearWorkspaceState() {
     state.draftSaveTimer = null;
   }
   state.projectGeneration += 1;
+  state.folderWorkspace?.close();
+  state.folderWorkspace = null;
+  if (state.imageDataUrl.startsWith("blob:")) URL.revokeObjectURL(state.imageDataUrl);
+  state.queuePage = 0;
   state.projectWriteTail = Promise.resolve();
   state.project = null;
   state.currentImageId = null;
@@ -826,6 +888,8 @@ function scheduleProjectSave() {
     return;
   }
   markProjectDirty();
+  // Keep the latest edits in the current record even while persistence is blocked.
+  syncCurrentProjectImage();
   if (state.draftSaveBlocked) {
     return;
   }
@@ -1001,6 +1065,7 @@ function syncShapeControls() {
 }
 
 function setDrawClosed(closed) {
+  if (state.projectOperationBusy) return;
   if (!isShapeAllowed(state.activeLabel, closed)) {
     setStatus(`${getLabel(state.activeLabel).name} does not allow ${getShapeType(closed)}.`, true);
     return;
@@ -1013,6 +1078,7 @@ function setDrawClosed(closed) {
 }
 
 function setMode(mode) {
+  if (state.projectOperationBusy) return;
   if (mode === "edit") {
     mode = "refine";
   }
@@ -1031,6 +1097,7 @@ function setMode(mode) {
 }
 
 function selectContour(id) {
+  if (state.projectOperationBusy) return;
   state.selectedId = id;
   scheduleDraftSave();
   renderAll();
@@ -1098,6 +1165,7 @@ function cancelDraft() {
   }
   state.draftPoints = [];
   state.hoverPoint = null;
+  if (state.folderWorkspace) scheduleProjectSave();
   renderAll();
   setStatus("Draft contour canceled.");
 }
@@ -1166,6 +1234,11 @@ function updateJsonOutput() {
     return;
   }
   try {
+    if (state.folderWorkspace) {
+      syncCurrentProjectImage();
+      elements.jsonOutput.value = JSON.stringify(state.folderWorkspace.buildImageFile(getCurrentProjectImageRecord()), null, 2);
+      return;
+    }
     elements.jsonOutput.value = JSON.stringify(
       buildAnnotationFile({ imageSet: state.project, labels: LABELS }),
       null,
@@ -1191,6 +1264,9 @@ function updateCommandState() {
   syncSidebarHierarchy();
   syncModeControls();
   const busy = state.projectOperationBusy;
+  elements.labelGrid.querySelectorAll("button").forEach((button) => { button.disabled = busy; });
+  elements.contourList.querySelectorAll("button, select").forEach((control) => { control.disabled = busy; });
+  elements.contourList.inert = busy;
   elements.undoButton.disabled = busy || state.undoStack.length === 0;
   elements.redoButton.disabled = busy || state.redoStack.length === 0;
   elements.deleteButton.disabled = busy || !state.selectedId;
@@ -1199,6 +1275,17 @@ function updateCommandState() {
   elements.openImageButton.disabled = busy;
   elements.openFolderButton.disabled = busy;
   elements.openZipButton.disabled = busy;
+  elements.openDirectoryButton.disabled = busy || !supportsFolderWorkspace();
+  elements.chooseOutputButton.disabled = busy || !state.pendingSourceHandle;
+  elements.saveNowButton.hidden = !state.folderWorkspace;
+  elements.saveNowButton.disabled = busy || !state.image;
+  elements.folderOutputLocation.hidden = !state.folderWorkspace;
+  elements.folderOutputLocation.textContent = state.folderWorkspace ? `Output: ${state.folderWorkspace.outputHandle.name} / annotations` : "";
+  elements.exportAnnotationsButton.textContent = state.folderWorkspace ? "Download current JSON" : "Export JSON";
+  elements.importAnnotationsButton.textContent = state.folderWorkspace ? "Restore current JSON" : "Import JSON";
+  elements.annotationImportHelp.textContent = state.folderWorkspace
+    ? "Each image is saved automatically under the output folder's annotations directory. Back up that folder. These buttons download or restore the current image only."
+    : "One JSON contains this project's relative paths, progress, and contours. Imports match by path and image size.";
   elements.projectList.querySelectorAll("button").forEach((button) => {
     button.disabled = busy;
   });
@@ -1237,6 +1324,7 @@ function renderLabels() {
     button.disabled = state.projectOperationBusy;
     button.innerHTML = `<span class="swatch" style="background:${label.color}"></span><span>${label.name}</span>`;
     button.addEventListener("click", () => {
+      if (state.projectOperationBusy) return;
       const nextClosed = normalizeClosedForLabel(label.id);
       if (state.draftPoints.length && nextClosed !== state.drawClosed) {
         setStatus(`Finish or cancel the current ${getDrawShapeName()} before switching to ${label.name}.`, true);
@@ -1297,6 +1385,7 @@ function renderContourList() {
       select.appendChild(option);
     });
     select.addEventListener("change", (event) => {
+      if (state.projectOperationBusy) { event.target.value = contour.label; return; }
       const nextLabelId = event.target.value;
       if (!isShapeAllowed(nextLabelId, contour.closed)) {
         event.target.value = contour.label;
@@ -1316,6 +1405,7 @@ function renderContourList() {
 
     item.querySelector(".small-button").addEventListener("click", (event) => {
       event.stopPropagation();
+      if (state.projectOperationBusy) return;
       const previous = snapshotContours();
       state.contours = state.contours.filter((candidate) => candidate.id !== contour.id);
       state.selectedId = state.contours[0]?.id || null;
@@ -1347,19 +1437,28 @@ function renderProjectPanel() {
     state.projectOperationBusy || !getAdjacentImageId(project, -1);
   elements.nextImageButton.disabled =
     state.projectOperationBusy || !getAdjacentImageId(project, 1);
-  const hasImage = Boolean(getCurrentProjectImageRecord());
+  const hasImage = Boolean(state.image);
   elements.markDoneButton.disabled = state.projectOperationBusy || !hasImage;
   elements.skipImageButton.disabled = state.projectOperationBusy || !hasImage;
   elements.needsReviewButton.disabled = state.projectOperationBusy || !hasImage;
   elements.imageQueueList.innerHTML = "";
   if (!images.length) {
+    elements.queuePagination.hidden = true;
     const empty = document.createElement("div");
     empty.className = "empty-list";
     empty.textContent = "No images";
     elements.imageQueueList.appendChild(empty);
     return;
   }
-  images.forEach((image) => {
+  const paginated = Boolean(state.folderWorkspace) && images.length > FOLDER_QUEUE_PAGE_SIZE;
+  const pageCount = Math.max(1, Math.ceil(images.length / FOLDER_QUEUE_PAGE_SIZE));
+  state.queuePage = Math.min(state.queuePage, pageCount - 1);
+  elements.queuePagination.hidden = !paginated;
+  elements.queuePageLabel.textContent = `${state.queuePage + 1} / ${pageCount}`;
+  elements.queuePreviousPage.disabled = state.projectOperationBusy || state.queuePage === 0;
+  elements.queueNextPage.disabled = state.projectOperationBusy || state.queuePage + 1 >= pageCount;
+  const visibleImages = paginated ? images.slice(state.queuePage * FOLDER_QUEUE_PAGE_SIZE, (state.queuePage + 1) * FOLDER_QUEUE_PAGE_SIZE) : images;
+  visibleImages.forEach((image) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "queue-item";
@@ -1502,13 +1601,18 @@ function configureSoftRadiusInput() {
 }
 
 function loadImageDataUrl(dataUrl, fileName, options = {}) {
-  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) {
+  if (typeof dataUrl !== "string" || !(dataUrl.startsWith("data:image/") || (options.folderImage && dataUrl.startsWith("blob:")))) {
     setStatus("Saved image data is not valid.", true);
     return Promise.resolve(false);
   }
   return new Promise((resolve) => {
     const image = new Image();
     image.onload = () => {
+      if (options.folderImage && image.naturalWidth * image.naturalHeight > MAX_FOLDER_IMAGE_PIXELS) {
+        setStatus("This image exceeds the 64-megapixel limit.", true);
+        resolve(false);
+        return;
+      }
       if (!isAnnotatableImageSize(getImageSize(image))) {
         if (options.clearOnError) {
           clearStoredDraft();
@@ -1534,7 +1638,7 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
       let templateInitialized = false;
       try {
         nextContours = Array.isArray(options.contours)
-          ? normalizeContoursForImage(options.contours, getImageSize(image))
+          ? options.folderImage ? geometry.cloneContours(options.contours) : normalizeContoursForImage(options.contours, getImageSize(image))
           : [];
         if (options.autoInitializeTemplate === true && nextContours.length === 0) {
           nextContours = buildInitialFeatureTemplateContours(image);
@@ -1551,7 +1655,7 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
       }
       if (typeof options.beforeCommit === "function") {
         try {
-          options.beforeCommit();
+          options.beforeCommit(image);
         } catch (error) {
           console.error("Image selection could not be committed.", error);
           setStatus("Image selection could not be committed.", true);
@@ -1559,6 +1663,7 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
           return;
         }
       }
+      if (state.imageDataUrl.startsWith("blob:") && state.imageDataUrl !== dataUrl) URL.revokeObjectURL(state.imageDataUrl);
       state.image = image;
       state.imageDataUrl = dataUrl;
       state.imagePersisted = Boolean(options.imageStored);
@@ -1567,7 +1672,7 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
       state.selectedId = state.contours.some((contour) => contour.id === options.selectedId)
         ? options.selectedId
         : state.contours[0]?.id || null;
-      state.draftPoints = [];
+      state.draftPoints = options.draft?.points?.map((point) => ({ ...point })) || [];
       state.hoverPoint = null;
       state.undoStack = [];
       state.redoStack = [];
@@ -1589,6 +1694,11 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
         typeof options.imageZoom === "number" ? clampImageZoom(options.imageZoom) : 1;
       if (templateInitialized && typeof options.mode !== "string") {
         state.mode = "refine";
+      }
+      if (state.draftPoints.length) {
+        state.activeLabel = options.draft.label;
+        state.drawClosed = options.draft.closed;
+        state.mode = "draw";
       }
       fitCanvas();
       renderAll();
@@ -1694,6 +1804,29 @@ async function loadProjectImageRecord(imageRecord, options = {}) {
   if (!imageRecord) {
     return false;
   }
+  if (state.folderWorkspace) {
+    const loaded = await state.folderWorkspace.loadImage(imageRecord);
+    const url = URL.createObjectURL(loaded.file);
+    const record = loaded.record;
+    const previous = getCurrentProjectImageRecord();
+    const displayed = await loadImageDataUrl(url, imageRecord.path, {
+      ...buildProjectPreferences(), folderImage: true, persist: false,
+      contours: record?.contours, selectedId: record?.selectedId, draft: record?.draft,
+      autoInitializeTemplate: !record, expectedImageRecord: record,
+      beforeCommit(image) {
+        loaded.commit();
+        if (previous && previous.id !== imageRecord.id) { delete previous.contours; delete previous.draft; }
+        Object.assign(imageRecord, { width: image.naturalWidth, height: image.naturalHeight, status: record?.status || "unlabeled" });
+        state.currentImageId = imageRecord.id;
+        state.project.currentImageId = imageRecord.id;
+        state.queuePage = Math.floor(getImageIndex(state.project, imageRecord.id) / FOLDER_QUEUE_PAGE_SIZE);
+      },
+      status: `Loaded ${imageRecord.path}. Annotations save to ${state.folderWorkspace.outputHandle.name}.`,
+    });
+    if (!displayed) URL.revokeObjectURL(url);
+    else syncCurrentProjectImage();
+    return displayed;
+  }
   const storedAsset = options.dataUrl
     ? { dataUrl: options.dataUrl }
     : imageRecord.dataUrl
@@ -1753,6 +1886,130 @@ async function stageProjectImageRecord(imageRecord) {
   assertImageDimensionsMatchRecord(decodedImage, imageRecord);
   normalizeContoursForImage(imageRecord.contours || [], getImageSize(decodedImage));
   return storedAsset.dataUrl;
+}
+
+async function rememberFolderShortcut(workspace) {
+  try {
+    await rememberFolderWorkspace(workspace);
+  } catch (error) {
+    console.warn("Folder shortcut could not be saved; annotation files are unaffected.", error);
+    setStatus("Files are saved, but the recent shortcut could not be remembered. Select both folders again next time.", true);
+  }
+}
+
+async function activateFolderWorkspace({ sourceHandle, outputHandle, routeEpoch = state.routeEpoch }) {
+  if (state.projectOperationBusy) return false;
+  const routeRequest = { ...captureRouteRequest(), routeEpoch };
+  setProjectOperationBusy(true);
+  let workspace;
+  try {
+    setStatus("Opening folders and checking saved annotations…");
+    workspace = await openFolderWorkspace({ sourceHandle, outputHandle, onProgress: setStatus });
+    if (!isRouteRequestCurrent(routeRequest)) {
+      workspace.close();
+      state.routeRetryPending = true;
+      return false;
+    }
+    clearWorkspaceState();
+    state.folderWorkspace = workspace;
+    state.project = workspace.project;
+    state.currentImageId = workspace.project.currentImageId;
+    applyProjectPreferences(workspace.project.preferences);
+    resetProjectSaveTracking();
+    setView("workspace");
+    if (!await loadProjectImageRecord(getCurrentImage(state.project))) throw new Error("The selected image could not be decoded. Its existing annotations were not changed.");
+    if (isRouteRequestCurrent(routeRequest)) {
+      window.history.replaceState(null, "", buildProjectHash(state.project.localProjectKey));
+    } else {
+      // Image hashing/decoding can outlast a newer Back or hash navigation.
+      // Preserve that destination and process it through the normal save barrier.
+      state.routeRetryPending = true;
+    }
+    await rememberFolderShortcut(workspace);
+    scheduleProjectSave();
+    elements.workspaceTitle.focus({ preventScroll: true });
+    return true;
+  } catch (error) {
+    workspace?.close();
+    if (state.folderWorkspace === workspace) clearWorkspaceState();
+    if (!isRouteRequestCurrent(routeRequest)) {
+      state.routeRetryPending = true;
+      console.warn("Superseded folder opening failed.", error);
+      return false;
+    }
+    window.history.replaceState(null, "", getBareLocation());
+    console.error("Folder workspace could not be opened.", error);
+    await showProjectHub({ message: error.message || "Folder workspace could not be opened.", isError: true });
+    return false;
+  } finally {
+    setProjectOperationBusy(false);
+    renderAll();
+  }
+}
+
+async function chooseImageDirectory() {
+  if (state.projectOperationBusy || state.view !== "hub") return;
+  try {
+    const handle = await window.showDirectoryPicker({ id: "face-contour-images", mode: "read" });
+    state.pendingSourceHandle = handle;
+    elements.directorySelection.textContent = `Images: ${handle.name} (read-only)`;
+    elements.chooseOutputButton.hidden = false;
+    updateCommandState();
+    elements.chooseOutputButton.focus();
+    setStatus("Now choose a separate output folder for annotation JSON. Existing output files will be reopened, not reset.");
+  } catch (error) {
+    if (error.name === "AbortError") { setStatus("Folder selection cancelled."); return; }
+    console.error("Image folder selection failed.", error);
+    setStatus("Cannot open folders. Use desktop Chrome or Edge on HTTPS or localhost, and allow folder access.", true);
+  }
+}
+
+async function chooseOutputDirectory() {
+  if (state.projectOperationBusy || !state.pendingSourceHandle) return;
+  try {
+    const outputHandle = await window.showDirectoryPicker({ id: "face-contour-output", mode: "readwrite" });
+    await activateFolderWorkspace({ sourceHandle: state.pendingSourceHandle, outputHandle });
+  } catch (error) {
+    if (error.name === "AbortError") { setStatus("Output folder selection cancelled. Your image folder selection was kept."); return; }
+    console.error("Output folder selection failed.", error);
+    setStatus(error.message || "Allow write access to the output folder and try again.", true);
+  }
+}
+
+async function reconnectFolderProject(bookmark) {
+  if (state.projectOperationBusy) return;
+  try {
+    await ensureFolderPermission({ handle: bookmark.sourceHandle, mode: "read", request: true });
+    await ensureFolderPermission({ handle: bookmark.outputHandle, mode: "readwrite", request: true });
+    await activateFolderWorkspace(bookmark);
+  } catch (error) {
+    console.warn("Folder reconnect failed.", error);
+    setStatus(error.message || "Choose both folders again to reconnect.", true);
+  }
+}
+
+async function retryCurrentSave() {
+  if (!state.project || state.projectOperationBusy) return;
+  setProjectOperationBusy(true);
+  try {
+    if (state.folderWorkspace) {
+      await ensureFolderPermission({ handle: state.folderWorkspace.sourceHandle, mode: "read", request: true });
+      await ensureFolderPermission({ handle: state.folderWorkspace.outputHandle, mode: "readwrite", request: true });
+    }
+    await state.projectWriteTail;
+    state.draftSaveBlocked = false;
+    markProjectDirty();
+    await flushProjectSaves();
+    setStatus("Latest changes saved to the output folder.");
+  } catch (error) {
+    state.draftSaveBlocked = true;
+    setProjectSaveStatus("failed");
+    console.error("Save retry failed.", error);
+    setStatus(error.message || "Save failed. Download current JSON before leaving.", true);
+  } finally {
+    setProjectOperationBusy(false);
+    renderAll();
+  }
 }
 
 function formatGigabytes(bytes) {
@@ -1946,14 +2203,9 @@ async function switchToProjectImage(imageId) {
     setStatus("Image could not be found in the current set.", true);
     return;
   }
+  setProjectOperationBusy(true);
   try {
-    await persistProjectNow();
-  } catch (error) {
-    // The in-memory image record was synchronized before the failed write, so the
-    // user can keep working while the persistent-save warning remains visible.
-    console.error("Could not persist before switching images.", error);
-  }
-  try {
+    await flushProjectSaves();
     const loaded = await loadProjectImageRecord(imageRecord);
     if (loaded) {
       scheduleDraftSave();
@@ -1971,6 +2223,9 @@ async function switchToProjectImage(imageId) {
       error instanceof Error ? error.message : "Project image could not be loaded.",
       true,
     );
+  } finally {
+    setProjectOperationBusy(false);
+    renderProjectPanel();
   }
 }
 
@@ -2012,6 +2267,10 @@ async function setCurrentImageStatus(status) {
     return;
   }
   if (status === "done") {
+    if (state.draftPoints.length) {
+      setStatus("Finish or cancel the unfinished drawing before marking this image Done.", true);
+      return;
+    }
     const errors = validateImageForDone(imageRecord);
     if (errors.length) {
       setStatus(errors[0], true);
@@ -2042,6 +2301,21 @@ async function showProjectHub({ message = "Choose a project to continue.", isErr
 }
 
 async function openLocalProject(localProjectKey, routeEpoch = state.routeEpoch) {
+  if (localProjectKey.startsWith(FOLDER_PROJECT_PREFIX)) {
+    try {
+      const bookmarks = await listFolderBookmarks();
+      const bookmark = bookmarks.find((item) => item.localProjectKey === localProjectKey);
+      if (!bookmark) throw new Error("Choose the original image and output folders to reopen this workspace. Files on disk were not deleted.");
+      return await activateFolderWorkspace({ ...bookmark, routeEpoch });
+    } catch (error) {
+      console.warn("Folder workspace needs reconnecting.", error);
+      if (routeEpoch === state.routeEpoch) {
+        window.history.replaceState(null, "", getBareLocation());
+        await showProjectHub({ message: error.message, isError: true });
+      }
+      return false;
+    }
+  }
   if (state.projectOperationBusy) {
     return false;
   }
@@ -2113,8 +2387,13 @@ async function leaveCurrentProject({ updateHistory = true } = {}) {
       await flushProjectSaves();
     } catch (error) {
       console.error("Local saves could not be flushed before exit.", error);
+      // A failed earlier snapshot may have later writes already queued. Keep
+      // the workspace lease until those writes (and their cleanup) settle.
+      await state.projectWriteTail;
       const confirmed = window.confirm(
-        "The latest changes are not saved in this browser. Export annotation JSON first if you need them. Exit anyway and abandon those unsaved changes?",
+        state.folderWorkspace
+          ? "The latest changes are not saved to the output folder. Download current JSON first if you need them. Exit anyway and abandon those unsaved changes?"
+          : "The latest changes are not saved in this browser. Export annotation JSON first if you need them. Exit anyway and abandon those unsaved changes?",
       );
       if (!confirmed) {
         setStatus("Exit cancelled. Export annotations or retry after local saving recovers.", true);
@@ -2122,6 +2401,7 @@ async function leaveCurrentProject({ updateHistory = true } = {}) {
       }
       abandonedUnsavedChanges = true;
     }
+    if (state.folderWorkspace) await rememberFolderShortcut(state.folderWorkspace);
     clearWorkspaceState();
     if (updateHistory) {
       if (isRouteRequestCurrent(routeRequest)) {
@@ -2159,8 +2439,11 @@ async function deleteProjectFromHub(project) {
     return;
   }
   const name = project.name || "Untitled project";
+  const directoryProject = project.source?.type === "directory";
   const confirmed = window.confirm(
-    `Delete the local copy of “${name}”? This removes its images and annotations from this browser only. Original files and exported JSON are not affected.`,
+    directoryProject
+      ? `Forget the shortcut to “${name}”? All original images and output annotation files will stay on disk.`
+      : `Delete the local copy of “${name}”? This removes its images and annotations from this browser only. Original files and exported JSON are not affected.`,
   );
   if (!confirmed) {
     setStatus("Project deletion cancelled.");
@@ -2172,7 +2455,9 @@ async function deleteProjectFromHub(project) {
   let restoreFocus = false;
   setProjectOperationBusy(true);
   try {
-    const deleted = await storage.deleteLocalProject(project.localProjectKey);
+    const deleted = directoryProject
+      ? (await forgetFolderBookmark(project.localProjectKey), true)
+      : await storage.deleteLocalProject(project.localProjectKey);
     state.hubProjects = state.hubProjects.filter(
       (candidate) => candidate.localProjectKey !== project.localProjectKey,
     );
@@ -2182,7 +2467,7 @@ async function deleteProjectFromHub(project) {
     try {
       await refreshProjectLibrary();
       setStatus(
-        deleted ? `Deleted the local copy of ${name}.` : `${name} was already removed.`,
+        directoryProject ? `Forgot shortcut to ${name}. Files on disk were kept.` : deleted ? `Deleted the local copy of ${name}.` : `${name} was already removed.`,
       );
     } catch (refreshError) {
       console.error("Project list could not be refreshed after deletion.", refreshError);
@@ -2409,6 +2694,10 @@ function handleDrawPointerDown(point) {
   }
   state.draftPoints.push(point);
   state.hoverPoint = point;
+  if (state.folderWorkspace) {
+    markCurrentImageStatus("in_progress");
+    scheduleProjectSave();
+  }
   renderAll();
   setStatus("Point added.");
 }
@@ -2510,7 +2799,7 @@ function handlePointerDown(event) {
 }
 
 function handlePointerMove(event) {
-  if (!state.image) {
+  if (state.projectOperationBusy || !state.image) {
     return;
   }
   if (state.interaction?.type === "pan") {
@@ -2686,6 +2975,12 @@ async function exportAnnotations() {
       console.error("Local save could not be flushed before annotation export.", error);
     }
     syncCurrentProjectImage();
+    if (state.folderWorkspace) {
+      const payload = state.folderWorkspace.buildImageFile(getCurrentProjectImageRecord());
+      downloadJsonPayload(payload, `${getCurrentProjectImageRecord().name}.json`);
+      setStatus(localSaveFailed ? "Current JSON downloaded. Output-folder saving still needs attention." : "Current JSON downloaded; all saved images are in your output folder.", localSaveFailed);
+      return;
+    }
     const payload = buildAnnotationFile({ imageSet: state.project, labels: LABELS });
     const fileName =
       getDownloadBaseName({ name: state.project.name, fallback: "annotations" }) +
@@ -2781,6 +3076,48 @@ async function replaceActiveAnnotations(preparedImageSet) {
   }
 }
 
+async function restoreFolderImage(file) {
+  setProjectOperationBusy(true);
+  try {
+    await flushProjectSaves();
+    syncCurrentProjectImage();
+    const current = getCurrentProjectImageRecord();
+    const original = state.folderWorkspace.buildImageFile(current);
+    const data = await readJsonFile(file);
+    let restored;
+    if (data?.kind === FOLDER_IMAGE_KIND) {
+      restored = validateFolderImage({ data, path: current.path });
+      if (restored.source.sha256 !== original.source.sha256 || restored.source.size !== original.source.size) throw new Error("This JSON belongs to a different original image. Nothing was changed.");
+    } else {
+      // Allows existing browser-project backups to be recovered one image at a time.
+      const annotations = parseAnnotationFile({ data, labels: LABELS, createId });
+      const match = annotations.images.find((image) => image.relativePath === current.path);
+      if (!match) throw new Error("The JSON has no annotation for the current image path.");
+      restored = { ...original, ...match, relativePath: current.path, draft: { points: [], label: state.activeLabel, closed: state.drawClosed } };
+    }
+    if (restored.width !== current.width || restored.height !== current.height) throw new Error("The JSON image dimensions do not match the current image.");
+    if (!window.confirm("Replace the current image's contours and unfinished drawing with this JSON? Other images are not changed.")) return;
+    state.contours = geometry.cloneContours(validateFolderImage({ data: restored, path: current.path }).contours);
+    state.selectedId = restored.selectedId || state.contours[0]?.id || null;
+    state.draftPoints = restored.draft.points.map((point) => ({ ...point }));
+    state.activeLabel = restored.draft.label;
+    state.drawClosed = restored.draft.closed;
+    if (state.draftPoints.length) state.mode = "draw";
+    current.status = restored.status;
+    state.undoStack = [];
+    state.redoStack = [];
+    scheduleProjectSave();
+    await flushProjectSaves();
+    setStatus("Current image restored and saved to the output folder.");
+  } catch (error) {
+    console.error("Current folder annotation could not be restored.", error);
+    setStatus(error.message || "Restore failed. Current edits remain available for download.", true);
+  } finally {
+    setProjectOperationBusy(false);
+    renderAll();
+  }
+}
+
 async function importAnnotations(file) {
   if (!file || state.projectOperationBusy) {
     return;
@@ -2789,6 +3126,7 @@ async function importAnnotations(file) {
     setStatus("Open the matching image folder or ZIP before importing annotations.", true);
     return;
   }
+  if (state.folderWorkspace) { await restoreFolderImage(file); return; }
   setProjectOperationBusy(true);
   state.annotationImportReport = null;
   renderAnnotationImportReport();
@@ -2866,6 +3204,8 @@ async function importAnnotations(file) {
  */
 function hasUnsavedAnnotationWork() {
   return Boolean(
+    (state.interaction && state.interaction.type !== "pan") ||
+    (!state.folderWorkspace && state.draftPoints.length) ||
     state.draftSaveTimer ||
       state.draftSaveBlocked ||
       state.projectSaveInFlight > 0 ||
@@ -2893,6 +3233,11 @@ function isInteractiveShortcutTarget(target) {
 }
 
 function wireEvents() {
+  elements.openDirectoryButton.addEventListener("click", chooseImageDirectory);
+  elements.chooseOutputButton.addEventListener("click", chooseOutputDirectory);
+  elements.saveNowButton.addEventListener("click", retryCurrentSave);
+  elements.queuePreviousPage.addEventListener("click", () => { state.queuePage = Math.max(0, state.queuePage - 1); renderProjectPanel(); });
+  elements.queueNextPage.addEventListener("click", () => { state.queuePage += 1; renderProjectPanel(); });
   elements.openImageButton.addEventListener("click", () => elements.imageInput.click());
   elements.openFolderButton.addEventListener("click", () => elements.folderInput.click());
   elements.openZipButton.addEventListener("click", () => elements.zipInput.click());
@@ -2982,6 +3327,7 @@ function wireEvents() {
       finishStagePan(event);
       return;
     }
+    if (state.interaction?.previousSnapshot) commitChange(state.interaction.previousSnapshot);
     state.interaction = null;
     renderAll();
   });
@@ -3127,7 +3473,11 @@ async function init() {
   renderLabels();
   renderAll();
   wireEvents();
+  elements.folderSupportNote.textContent = supportsFolderWorkspace()
+    ? "Desktop Chrome / Edge. For large ZIPs, extract them first. Original images are never modified."
+    : "Direct folder access needs desktop Chrome / Edge on HTTPS or localhost. Browser imports remain available below.";
   await ensurePersistentStorage();
+  elements.hubStorageNote.innerHTML = "<strong>Annotations saved to your folder</strong>Folder projects write JSON files to your chosen output directory. Back up that directory. Browser-imported projects still need exported backups.";
   const migrationMessages = await runLocalStorageMigrations();
   await handleRouteChange();
   if (migrationMessages.length && state.view === "hub") {

@@ -218,6 +218,20 @@
         background: rgba(251, 250, 244, 0.94);
       }
 
+      .folder-actions {
+        display: grid;
+        gap: 12px;
+      }
+
+      .folder-actions button { min-height: 44px; padding: 8px 12px; }
+      .folder-selection { overflow-wrap: anywhere; font-size: 14px; color: #f8fbf7; }
+      .browser-import-options { margin-top: 24px; padding-top: 16px; border-top: 1px solid #547064; }
+      .browser-import-options summary { cursor: pointer; font-size: 14px; }
+      .browser-import-options .new-project-actions { margin-top: 14px; }
+      .folder-output-location { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; margin: 8px 0; }
+      .queue-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+      .queue-pagination button { padding: 4px 10px; }
+
       .library-header {
         display: flex;
         align-items: baseline;
@@ -1304,8 +1318,8 @@
           <div class="hub-title-group">
             <h1 id="hubTitle" tabindex="-1">Face Contour Lab</h1>
             <p class="hub-lead">
-              Keep independent image sets organized in this browser, then enter a focused
-              workspace to annotate one project at a time.
+              Open images from your computer and save annotations directly to your chosen
+              folder. Nothing is uploaded.
             </p>
           </div>
           <div class="local-only-note" id="hubStorageNote">
@@ -1316,13 +1330,23 @@
 
         <div class="hub-layout">
           <section class="new-project-panel" aria-labelledby="newProjectTitle">
-            <h2 id="newProjectTitle">New project</h2>
-            <p>Choose a source once. The images and annotation progress become a separate local project.</p>
+            <h2 id="newProjectTitle">Open local folders</h2>
+            <p>Choose the images first, then a separate folder for annotation JSON. Reuse the same folders to continue later.</p>
+            <div class="folder-actions">
+              <button class="primary-button" id="openDirectoryButton" type="button">1. Choose image folder</button>
+              <span class="folder-selection" id="directorySelection" role="status"></span>
+              <button id="chooseOutputButton" type="button" hidden>2. Choose output folder</button>
+            </div>
+            <p id="folderSupportNote"></p>
+            <details class="browser-import-options">
+              <summary>Import a browser-only copy instead</summary>
+              <p>For smaller batches. These copies stay in this browser; export JSON to back them up.</p>
             <div class="button-row new-project-actions">
               <button class="primary-button" id="openFolderButton" type="button">Open folder</button>
               <button id="openImageButton" type="button">Open images</button>
               <button id="openZipButton" type="button">Open ZIP</button>
             </div>
+            </details>
           </section>
 
           <section class="project-library" aria-labelledby="projectLibraryTitle">
@@ -1374,6 +1398,8 @@
               <span id="projectProgress">0 done, 0 active</span>
             </div>
             <div class="save-state" id="projectSaveState" data-state="idle">Loading…</div>
+            <div class="folder-output-location" id="folderOutputLocation" hidden></div>
+            <button id="saveNowButton" type="button" hidden>Save now</button>
           </div>
         </header>
 
@@ -1401,6 +1427,11 @@
               </summary>
               <div class="disclosure-body">
                 <div class="queue-list" id="imageQueueList"></div>
+                <div class="queue-pagination" id="queuePagination" hidden>
+                  <button id="queuePreviousPage" type="button" aria-label="Previous page of images">Back</button>
+                  <span id="queuePageLabel" aria-live="polite"></span>
+                  <button id="queueNextPage" type="button" aria-label="Next page of images">More</button>
+                </div>
               </div>
             </details>
           </section>
@@ -1590,7 +1621,7 @@
     </main>
 
     <script src="./vendor/fflate-0.8.3.js"></script>
-    <script type="module" src="./src/app.js?v=local-projects-1"></script>
+    <script type="module" src="./src/app.js?v=folder-workspace-1"></script>
   </body>
 </html>
 

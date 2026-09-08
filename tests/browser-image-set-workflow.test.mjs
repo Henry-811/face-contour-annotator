@@ -531,7 +531,7 @@ async function readHubState(client) {
 }
 
 async function clickProjectCardAction(client, projectName, actionSelector) {
-  return client.evaluate(`(() => {
+  return waitFor(() => client.evaluate(`(() => {
     const card = Array.from(document.querySelectorAll(".project-card")).find(
       (candidate) =>
         candidate.querySelector(".project-card-name")?.textContent.trim() ===
@@ -544,9 +544,12 @@ async function clickProjectCardAction(client, projectName, actionSelector) {
     if (!action) {
       throw new Error("Project card action was not found: " + ${JSON.stringify(actionSelector)});
     }
+    // The hub can become visible before its asynchronous refresh/save barrier
+    // finishes. A real user cannot activate a still-disabled project action.
+    if (action.disabled) return false;
     action.click();
     return true;
-  })()`);
+  })()`), `enabled ${actionSelector} for ${projectName}`);
 }
 
 let reloadSequence = 0;

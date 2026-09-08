@@ -1,5 +1,7 @@
 # Local project hub and focused annotation workspace
 
+> Current default: [Local folder workspace](./folder-workspace.md). The hub now opens a read-only source directory and a separate writable output directory; folder cards are optional shortcuts, and Forget never deletes files. The browser-imported project mode below remains available in the secondary import disclosure. Its IndexedDB and aggregate JSON contracts are unchanged.
+
 ## Feature Spec
 
 ### 1. Concept Brief source

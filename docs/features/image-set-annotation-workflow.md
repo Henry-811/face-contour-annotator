@@ -1,5 +1,7 @@
 # Image-set import and annotation-file workflow
 
+> For large datasets, use the new default [Local folder workspace](./folder-workspace.md): extract ZIPs locally, then select image and output directories. It loads original images on demand and writes per-image JSON files directly to disk. The limits and aggregate import/export rules below describe the separate browser-copy mode, not folder-direct storage.
+
 > Project lifecycle update: image-set parsing, annotation, and annotation-file rules in this document still apply. Creation, refresh routing, switching, and deletion now follow [Local project hub and focused annotation workspace](./local-project-hub.md), which supersedes the former single `current-project` slot and source-replacement flow.
 
 ## Feature Spec
