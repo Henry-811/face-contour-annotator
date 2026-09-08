@@ -460,6 +460,9 @@ async function refreshProjectLibrary() {
 }
 
 function setProjectOperationBusy(busy) {
+  if (busy && state.interaction?.type === "pan") {
+    finishStagePan(state.interaction);
+  }
   if (busy && !state.projectOperationBusy && state.interaction?.previousSnapshot) {
     // A navigation/transfer may start before pointerup (e.g. browser Back).
     // Include the in-progress drag in the save barrier before disabling editing.
@@ -2641,7 +2644,7 @@ function moveContourPoints(points, dx, dy) {
 }
 
 function startStagePan(event, captureTarget) {
-  if (!state.image || !isStageScrollable()) {
+  if (!state.image || state.interaction || !isStageScrollable()) {
     return false;
   }
   event.preventDefault();
@@ -2649,6 +2652,8 @@ function startStagePan(event, captureTarget) {
   state.interaction = {
     type: "pan",
     pointerId: event.pointerId,
+    // PointerEvent.buttons uses left=1, right=2, middle=4 bit flags.
+    buttonMask: event.button === 1 ? 4 : event.button === 2 ? 2 : 1,
     startClientX: event.clientX,
     startClientY: event.clientY,
     startScrollLeft: elements.stageShell.scrollLeft,
@@ -2659,6 +2664,13 @@ function startStagePan(event, captureTarget) {
 }
 
 function updateStagePan(event, interaction) {
+  if (event.pointerId !== interaction.pointerId) {
+    return;
+  }
+  if (!(event.buttons & interaction.buttonMask)) {
+    finishStagePan(event);
+    return;
+  }
   const dx = event.clientX - interaction.startClientX;
   const dy = event.clientY - interaction.startClientY;
   elements.stageShell.scrollLeft = interaction.startScrollLeft - dx;
@@ -2666,19 +2678,22 @@ function updateStagePan(event, interaction) {
 }
 
 function finishStagePan(event) {
+  if (state.interaction?.type !== "pan" || event.pointerId !== state.interaction.pointerId) {
+    return;
+  }
+  state.interaction = null;
   if (elements.canvas.hasPointerCapture?.(event.pointerId)) {
     elements.canvas.releasePointerCapture(event.pointerId);
   }
   if (elements.stageShell.hasPointerCapture?.(event.pointerId)) {
     elements.stageShell.releasePointerCapture(event.pointerId);
   }
-  state.interaction = null;
   elements.stageShell.classList.remove("is-panning");
   updateStagePanState();
 }
 
 function shouldPanCanvas(event) {
-  return event.button === 1 || (event.button === 0 && state.spacePressed);
+  return event.button === 2 || event.button === 1 || (event.button === 0 && state.spacePressed);
 }
 
 function handleDrawPointerDown(point) {
@@ -2780,7 +2795,7 @@ function handleRefinePointerDown(point, event) {
 }
 
 function handlePointerDown(event) {
-  if (state.projectOperationBusy || !state.image) {
+  if (state.projectOperationBusy || !state.image || state.interaction) {
     return;
   }
   if (shouldPanCanvas(event) && startStagePan(event, elements.canvas)) {
@@ -2864,12 +2879,12 @@ function handlePointerMove(event) {
 }
 
 function handlePointerUp(event) {
-  if (elements.canvas.hasPointerCapture?.(event.pointerId)) {
-    elements.canvas.releasePointerCapture(event.pointerId);
-  }
   if (state.interaction?.type === "pan") {
     finishStagePan(event);
     return;
+  }
+  if (elements.canvas.hasPointerCapture?.(event.pointerId)) {
+    elements.canvas.releasePointerCapture(event.pointerId);
   }
   if (!state.interaction) {
     return;
@@ -2893,7 +2908,7 @@ function handleStagePointerDown(event) {
   if (
     state.projectOperationBusy ||
     event.target !== elements.stageShell ||
-    event.button !== 0
+    (event.button !== 0 && !shouldPanCanvas(event))
   ) {
     return;
   }
@@ -3335,6 +3350,18 @@ function wireEvents() {
   elements.stageShell.addEventListener("pointermove", handleStagePointerMove);
   elements.stageShell.addEventListener("pointerup", handleStagePointerUp);
   elements.stageShell.addEventListener("pointercancel", handleStagePointerUp);
+  elements.stageShell.addEventListener("lostpointercapture", handleStagePointerUp);
+  elements.stageShell.addEventListener("contextmenu", (event) => {
+    // Reserve right-drag for panning only inside the loaded image workspace.
+    if (state.image) event.preventDefault();
+  });
+
+  window.addEventListener("blur", () => {
+    state.spacePressed = false;
+    if (state.interaction?.type === "pan") {
+      finishStagePan(state.interaction);
+    }
+  });
 
   window.addEventListener("resize", fitCanvas);
   window.addEventListener("beforeunload", handleBeforeUnload);
