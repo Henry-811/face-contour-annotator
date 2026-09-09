@@ -9,14 +9,14 @@ import {
   PROJECT_IMAGE_STORE_NAME,
   PROJECT_STORE_NAME,
   STORAGE_HEADROOM_RATIO,
-} from "./config.js?v=workspace-ux-1";
+} from "./config.js?v=workspace-ux-2";
 import {
   createLocalProjectKey,
   createLocalWriteToken,
   toProjectImageAsset,
   toProjectImageRecord,
   toProjectMetadata,
-} from "./project.js?v=workspace-ux-1";
+} from "./project.js?v=workspace-ux-2";
 
 function openDraftDatabase() {
   return new Promise((resolve, reject) => {

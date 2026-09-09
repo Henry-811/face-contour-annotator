@@ -1,7 +1,7 @@
-import { LABELS, MAX_IMAGE_SET_ENTRIES, MAX_ANNOTATION_FILE_BYTES, MIN_ANNOTATION_IMAGE_SIDE } from "./config.js?v=workspace-ux-1";
-import { normalizeAnnotationRelativePath } from "./annotation-transfer.js?v=workspace-ux-1";
-import { buildTaskSchema, normalizeImportedContours, serializeContours } from "./exporter.js?v=workspace-ux-1";
-import { createAnnotationProject, createLocalProjectKey, isImageStatus } from "./project.js?v=workspace-ux-1";
+import { LABELS, MAX_IMAGE_SET_ENTRIES, MAX_ANNOTATION_FILE_BYTES, MIN_ANNOTATION_IMAGE_SIDE } from "./config.js?v=workspace-ux-2";
+import { normalizeAnnotationRelativePath } from "./annotation-transfer.js?v=workspace-ux-2";
+import { buildTaskSchema, normalizeImportedContours, serializeContours } from "./exporter.js?v=workspace-ux-2";
+import { createAnnotationProject, createLocalProjectKey, isImageStatus } from "./project.js?v=workspace-ux-2";
 
 export const FOLDER_PROJECT_PREFIX = "folder:";
 export const FOLDER_IMAGE_KIND = "face-contour-folder-image";

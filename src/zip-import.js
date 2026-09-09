@@ -6,11 +6,11 @@ import {
   MAX_ZIP_FILE_BYTES,
   MAX_ZIP_INFLATE_CONCURRENCY,
   ZIP_INFLATE_INPUT_CHUNK_BYTES,
-} from "./config.js?v=workspace-ux-1";
+} from "./config.js?v=workspace-ux-2";
 import {
   normalizeAnnotationRelativePath,
   stripSharedRootDirectory,
-} from "./annotation-transfer.js?v=workspace-ux-1";
+} from "./annotation-transfer.js?v=workspace-ux-2";
 
 const IMAGE_MIME_TYPES = Object.freeze({
   avif: "image/avif",

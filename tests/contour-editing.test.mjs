@@ -72,6 +72,8 @@ for (const closed of [false, true]) {
     for (const radius of [0, 40, 500]) {
       const moved = edit.moveCurvePoint({ ...split, point, imageSize: size, radius });
       assert.deepEqual(moved.points[split.pointIndex], point, "No old 32-pixel displacement cap");
+      assert.equal(moved.points.length, split.contour.points.length);
+      assert.equal(moved.segments.length, split.contour.segments.length);
       if (!radius) assert.deepEqual(moved.points[0], original.points[0]);
       assert.deepEqual(importContours(serializeContours([moved], LABELS))[0], moved);
     }
@@ -169,23 +171,59 @@ test("editing an endpoint does not clamp unrelated historical cubic controls", (
   assert.deepEqual(moved.segments[0], original.segments[0]);
 });
 
-test("soft editing splits sparse boundaries automatically and preserves the rest", () => {
+test("repeated soft edits preserve sparse and dense anchor counts, order and saved geometry", () => {
   for (const closed of [false, true]) {
     const original = edit.materializeContour(contour(closed));
-    for (const pointIndex of [0, 2, 4]) {
-      const prepared = edit.prepareSoftEdit({ contour: original, pointIndex, radius: 40 });
-      const target = { x: original.points[pointIndex].x + 70, y: original.points[pointIndex].y + 20 };
-      const moved = edit.moveCurvePoint({ ...prepared, point: target, imageSize: size, radius: 40 });
-      assert.deepEqual(moved.points[prepared.pointIndex], target, "Endpoints are not accidentally locked");
-      for (const i of prepared.fixedPointIndices) assert.deepEqual(moved.points[i], prepared.contour.points[i]);
-      prepared.contour.segments.forEach((segment, i) => {
-        const next = (i + 1) % moved.points.length;
-        if (JSON.stringify(moved.points[i]) === JSON.stringify(prepared.contour.points[i]) && JSON.stringify(moved.points[next]) === JSON.stringify(prepared.contour.points[next])) {
-          assert.deepEqual(moved.segments[i], segment, "Segments outside the soft range remain exact");
+    let dense = original;
+    for (let segmentIndex = original.segments.length - 1; segmentIndex >= 0; segmentIndex -= 1) {
+      dense = edit.insertCurvePoint({ contour: dense, segmentIndex, segmentT: 0.5 }).contour;
+    }
+    for (const source of [original, dense]) {
+      for (const pointIndex of [0, Math.floor(source.points.length / 2), source.points.length - 1]) {
+        let current = source;
+        for (const radius of [40, 400, 2000, 0, 40]) {
+          const before = structuredClone(current);
+          const target = { x: current.points[pointIndex].x + 7.25, y: current.points[pointIndex].y + 4.5 };
+          const moved = edit.moveCurvePoint({ contour: current, pointIndex, point: target, imageSize: size, radius });
+          assert.deepEqual(current, before, "The previous undo snapshot must remain untouched");
+          assert.deepEqual(moved.points[pointIndex], target, "The grabbed anchor keeps its index, including endpoints");
+          assert.equal(moved.points.length, source.points.length, "Dragging must neither insert nor simplify anchors");
+          assert.equal(moved.segments.length, source.segments.length);
+          assert.equal(moved.closed, source.closed);
+          before.segments.forEach((segment, i) => {
+            const next = (i + 1) % moved.points.length;
+            if (JSON.stringify(moved.points[i]) === JSON.stringify(before.points[i]) && JSON.stringify(moved.points[next]) === JSON.stringify(before.points[next])) {
+              assert.deepEqual(moved.segments[i], segment, "Wholly unaffected segments must remain exact");
+            }
+          });
+          assert.deepEqual(importContours(serializeContours([moved], LABELS))[0], moved);
+          current = moved;
         }
-      });
+      }
     }
   }
+});
+
+test("soft editing moves existing neighbors with falloff while keeping boundary anchors fixed", () => {
+  const original = edit.materializeContour({ id: "line", label: "nose", closed: false,
+    points: Array.from({ length: 7 }, (_, i) => ({ x: 100 + i * 50, y: 100 })) });
+  const moved = edit.moveCurvePoint({ contour: original, pointIndex: 3, point: { x: 250, y: 140 }, imageSize: size, radius: 150 });
+  [100, 110, 130, 140, 130, 110, 100].forEach((y, i) => near(moved.points[i], { x: original.points[i].x, y }));
+  assert.equal(moved.points.length, original.points.length);
+  assert.equal(moved.segments.length, original.segments.length);
+});
+
+test("soft influence crosses the closed seam without adding or reordering anchors", () => {
+  const original = edit.materializeContour({ id: "closed", label: "left_eye", closed: true,
+    points: [{x:100,y:100},{x:200,y:100},{x:200,y:200},{x:100,y:200}] });
+  const moved = edit.moveCurvePoint({ contour: original, pointIndex: 0, point: { x: 110, y: 110 }, imageSize: size, radius: 150 });
+  assert.deepEqual(moved.points[0], { x: 110, y: 110 });
+  const shift = moved.points[1].x - original.points[1].x;
+  assert.ok(shift > 0 && shift < 10);
+  near(moved.points[3], { x: original.points[3].x + shift, y: original.points[3].y + shift });
+  assert.deepEqual(moved.points[2], original.points[2]);
+  assert.equal(moved.points.length, 4);
+  assert.equal(moved.segments.length, 4);
 });
 
 test("a rotation handle remains visible for a contour touching the top edge", () => {
@@ -199,8 +237,10 @@ test("off-image spline segments cannot introduce unsavable anchors", () => {
   const hit = edit.nearestCurvePoint({ contour: original, point: { x: 0, y: 40 } });
   assert.ok(hit.distance < 8);
   assert.throws(() => edit.insertCurvePoint({ contour: original, segmentIndex: hit.segmentIndex, segmentT: hit.segmentT, imageSize: size }), /outside/);
-  const prepared = edit.prepareSoftEdit({ contour: original, pointIndex: 0, radius: 40, imageSize: size });
-  const moved = edit.moveCurvePoint({ ...prepared, point: { x: 10, y: 10 }, radius: 40, imageSize: size });
+  const moved = edit.moveCurvePoint({ contour: original, pointIndex: 0, point: { x: -10, y: 10 }, radius: 140, imageSize: size });
+  assert.deepEqual(moved.points[0], { x: 0, y: 10 });
+  assert.equal(moved.points.length, original.points.length);
+  assert.equal(moved.segments.length, original.segments.length);
   assert.deepEqual(importContours(serializeContours([moved], LABELS))[0], moved);
 });
 
@@ -224,6 +264,6 @@ test("straight Bezier segments insert at the clicked location despite nonlinear 
   const hit = edit.nearestCurvePoint({ contour: line, point });
   const inserted = edit.insertCurvePoint({ contour: line, segmentIndex: hit.segmentIndex, segmentT: hit.segmentT, imageSize: size });
   near(inserted.contour.points[inserted.pointIndex], point, 0.001);
-  const prepared = edit.prepareSoftEdit({ contour: line, pointIndex: 0, radius: 40, imageSize: size });
-  near(prepared.contour.points[prepared.fixedPointIndices[0]], {x:50,y:20}, 0.001);
+  const moved = edit.moveCurvePoint({ contour: line, pointIndex: 0, point: {x:20,y:30}, radius: 40, imageSize: size });
+  assert.deepEqual(moved.points, [{x:20,y:30}, line.points[1]], "A sparse soft edit moves the existing anchor, not a new boundary point");
 });

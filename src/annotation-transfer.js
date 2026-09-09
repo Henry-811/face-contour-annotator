@@ -3,14 +3,14 @@ import {
   MAX_RELATIVE_PATH_LENGTH,
   MIN_CLOSED_POINTS,
   MIN_OPEN_POINTS,
-} from "./config.js?v=workspace-ux-1";
+} from "./config.js?v=workspace-ux-2";
 import {
   buildTaskSchema,
   normalizeImportedContours,
   serializeContours,
   validateContoursForTaskSchema,
-} from "./exporter.js?v=workspace-ux-1";
-import { getProgress, isImageStatus } from "./project.js?v=workspace-ux-1";
+} from "./exporter.js?v=workspace-ux-2";
+import { getProgress, isImageStatus } from "./project.js?v=workspace-ux-2";
 
 export const ANNOTATION_FILE_KIND = "face-contour-annotations";
 export const ANNOTATION_FILE_SCHEMA_VERSION = 2;

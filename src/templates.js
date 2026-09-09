@@ -1,5 +1,5 @@
-import { MIN_ANNOTATION_IMAGE_SIDE } from "./config.js?v=workspace-ux-1";
-import { normalizePointToImage } from "./geometry.js?v=workspace-ux-1";
+import { MIN_ANNOTATION_IMAGE_SIDE } from "./config.js?v=workspace-ux-2";
+import { normalizePointToImage } from "./geometry.js?v=workspace-ux-2";
 
 const TEMPLATE_SEGMENTS = {
   eyebrow: 5,

@@ -18,16 +18,16 @@
   SOFT_RADIUS_MAX,
   SOFT_RADIUS_MIN,
   SOFT_RADIUS_STEP,
-} from "./config.js?v=workspace-ux-1";
-import * as geometry from "./geometry.js?v=workspace-ux-1";
-import * as editing from "./contour-editing.js?v=workspace-ux-1";
-import * as storage from "./storage.js?v=workspace-ux-1";
+} from "./config.js?v=workspace-ux-2";
+import * as geometry from "./geometry.js?v=workspace-ux-2";
+import * as editing from "./contour-editing.js?v=workspace-ux-2";
+import * as storage from "./storage.js?v=workspace-ux-2";
 import {
   buildTaskSchema,
   getImageSize,
   normalizeImportedContours as normalizeImportedContourData,
   validateContoursForTaskSchema,
-} from "./exporter.js?v=workspace-ux-1";
+} from "./exporter.js?v=workspace-ux-2";
 import {
   createAnnotationProject,
   createImageId,
@@ -42,7 +42,7 @@ import {
   isImageStatus,
   releaseProjectImageAssets,
   touchProject,
-} from "./project.js?v=workspace-ux-1";
+} from "./project.js?v=workspace-ux-2";
 import {
   applyAnnotationImport,
   assertAnnotationImportHasMatches,
@@ -51,22 +51,22 @@ import {
   parseAnnotationFile,
   planAnnotationImport,
   stripSharedRootDirectory,
-} from "./annotation-transfer.js?v=workspace-ux-1";
-import { readImageSourcesFromZip } from "./zip-import.js?v=workspace-ux-1";
-import { buildProjectHash, parseAppRoute } from "./routes.js?v=workspace-ux-1";
+} from "./annotation-transfer.js?v=workspace-ux-2";
+import { readImageSourcesFromZip } from "./zip-import.js?v=workspace-ux-2";
+import { buildProjectHash, parseAppRoute } from "./routes.js?v=workspace-ux-2";
 import {
   applyCanvasScale,
   drawAnnotationCanvas,
   getFitCanvasScale,
   getDisplayContourEntries,
   hitContourLabel,
-} from "./renderer.js?v=workspace-ux-1";
-import { buildDefaultFeatureContours } from "./templates.js?v=workspace-ux-1";
+} from "./renderer.js?v=workspace-ux-2";
+import { buildDefaultFeatureContours } from "./templates.js?v=workspace-ux-2";
 import {
   FOLDER_PROJECT_PREFIX, FOLDER_IMAGE_KIND, FOLDER_QUEUE_PAGE_SIZE, MAX_FOLDER_IMAGE_PIXELS,
   supportsFolderWorkspace, ensureFolderPermission, openFolderWorkspace,
   listFolderBookmarks, rememberFolderWorkspace, forgetFolderBookmark, validateFolderImage,
-} from "./folder-workspace.js?v=workspace-ux-1";
+} from "./folder-workspace.js?v=workspace-ux-2";
 const state = {
   view: "hub",
   hubProjects: [],
@@ -2923,25 +2923,17 @@ function handleRefinePointerDown(point, event) {
   const previousSnapshot = snapshotContours();
   state.selectedId = hit.contour.id;
   state.selectedPoint = null;
-  let original = editing.materializeContour(hit.contour);
+  const original = editing.materializeContour(hit.contour);
   const interaction = { type: "move", contourId: hit.contour.id, previousSnapshot, original, startPoint: point, pointerId: event.pointerId };
   if (handle) {
     interaction.type = "transform";
     interaction.handle = handle;
   } else if (state.editTool === "points" && hit.type === "vertex") {
-    let pointIndex = hit.pointIndex;
-    if (state.softDrag) {
-      const prepared = editing.prepareSoftEdit({ contour: original, pointIndex, radius: state.softRadius / state.scale, imageSize: getCurrentImageSize() });
-      original = prepared.contour; pointIndex = prepared.pointIndex;
-      interaction.fixedPointIndices = prepared.fixedPointIndices;
-    }
     const errors = validateContoursForTaskSchema({ contours: [original], labels: LABELS, imageSize: getCurrentImageSize() });
     if (errors.length) throw new Error(errors[0]);
-    interaction.original = original;
     interaction.type = "point";
-    interaction.pointIndex = pointIndex;
+    interaction.pointIndex = hit.pointIndex;
     interaction.radius = state.softDrag ? state.softRadius / state.scale : 0;
-    // Boundary preparation can shift indices, but a click has not applied it.
     state.selectedPoint = { contourId: hit.contour.id, index: hit.pointIndex };
   } else if (state.editTool === "points") {
     renderAll();
@@ -3025,7 +3017,7 @@ function handlePointerMove(event) {
     if (distance(point, interaction.startPoint) * state.scale < 2 && !interaction.moved) return;
     interaction.moved = true;
     replaceContour(editing.moveCurvePoint({ contour: interaction.original, pointIndex: interaction.pointIndex, point,
-      imageSize: getCurrentImageSize(), radius: interaction.radius, fixedPointIndices: interaction.fixedPointIndices }));
+      imageSize: getCurrentImageSize(), radius: interaction.radius }));
     state.selectedPoint = { contourId: interaction.contourId, index: interaction.pointIndex };
     drawCanvas();
     return;
@@ -3562,7 +3554,7 @@ function wireEvents() {
     state.softDrag = event.target.checked;
     scheduleDraftSave();
     drawCanvas();
-    setStatus(state.softDrag ? "Soft edit enabled. The highlighted arc shows the affected range." : "Direct point editing enabled.");
+    setStatus(state.softDrag ? "Soft edit enabled. Nearby points follow your drag; no points are added." : "Direct point editing enabled.");
   });
 
   elements.showPointsToggle.addEventListener("change", (event) => {

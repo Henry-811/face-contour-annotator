@@ -35,9 +35,9 @@ try {
       const c = data.contours[${index}];
       return {id:c.id, label:c.label, closed:c.closed, points:c.curve.anchors, segments:c.curve.segments};
     }
-    const storage = await import("/src/storage.js?v=workspace-ux-1");
-    const {parseAppRoute} = await import("/src/routes.js?v=workspace-ux-1");
-    const {materializeContour} = await import("/src/contour-editing.js?v=workspace-ux-1");
+    const storage = await import("/src/storage.js?v=workspace-ux-2");
+    const {parseAppRoute} = await import("/src/routes.js?v=workspace-ux-2");
+    const {materializeContour} = await import("/src/contour-editing.js?v=workspace-ux-2");
     const project = await storage.getLocalProject(parseAppRoute(location.hash).localProjectKey);
     const [record] = await storage.getLocalProjectImageRecords(project.localProjectKey, [project.currentImageId]);
     const c = materializeContour(record.contours[${index}]);
@@ -82,8 +82,8 @@ try {
     assert.equal(await client.evaluate('document.querySelector("#showPointsToggle").checked'), true);
     const initial = await current(0);
 
-    // Soft-edit boundary preparation must not move selection to an index that
-    // does not yet exist in the committed curve. Exercise the real save paths.
+    // Soft editing preserves existing anchor indices for clicks, small motion
+    // and real drags. Exercise selection/deletion through the real save paths.
     const originalRadius = await client.evaluate('document.querySelector("#softRadiusInput").value');
     await click("#softDragToggle");
     await client.evaluate('document.querySelector("#softRadiusInput").value = "20"; document.querySelector("#softRadiusInput").dispatchEvent(new Event("input", {bubbles:true}))');
@@ -97,14 +97,12 @@ try {
     ]) {
       await select(contourIndex);
       const before = await current(contourIndex);
-      const prepared = editing.prepareSoftEdit({ contour: before, pointIndex, radius: 20 / selectionScale, imageSize: {width:512, height:512} });
-      assert.notEqual(prepared.pointIndex, pointIndex, "Fixture must shift the index during soft-edit preparation");
       const from = before.points[pointIndex];
       await input({ from, ...(jitter ? { to: { x: from.x + jitter / selectionScale, y: from.y } } : {}) });
       assert.deepEqual(await current(contourIndex), before, "A click or sub-threshold movement must not edit geometry");
       await click("#deletePointButton");
       assert.equal(await client.evaluate('document.querySelector("#deletePreviewActions").hidden'), false);
-      assert.deepEqual(await current(contourIndex), before, "Deletion preview must not commit soft boundaries");
+      assert.deepEqual(await current(contourIndex), before, "Deletion preview must not alter the existing anchors");
       assert.deepEqual(await persistedContour({ provider, index: contourIndex }), before);
       await click("#cancelDeleteButton");
       assert.deepEqual(await current(contourIndex), before);
@@ -117,15 +115,15 @@ try {
       await click("#applyDeleteButton"); await waitFor(saved, "soft click deletion saved");
       const after = await current(contourIndex);
       assert.deepEqual(after.points, before.points.filter((_, index) => index !== pointIndex),
-        `${provider}: soft click must delete anchor ${pointIndex}, not its prepared index`);
+        `${provider}: soft click must delete only the selected anchor ${pointIndex}`);
       assert.deepEqual(await persistedContour({ provider, index: contourIndex }), after);
       await click("#undoButton"); await waitFor(saved, "soft click deletion undone");
       assert.deepEqual(await current(contourIndex), before);
       assert.deepEqual(await persistedContour({ provider, index: contourIndex }), before);
     }
 
-    // Once a real drag applies the prepared curve, selection must switch to
-    // its new index. Delete immediately, without clicking the moved point again.
+    // A real soft drag keeps the anchor count and selection index. Delete
+    // immediately, without clicking the moved point again.
     await select(0);
     const dragFrom = initial.points[2];
     const dragTo = { x: dragFrom.x + 4 / selectionScale, y: dragFrom.y + 6 / selectionScale };
@@ -133,7 +131,10 @@ try {
     await waitFor(saved, "soft drag selection saved");
     const softMoved = await current(0);
     const movedIndex = softMoved.points.findIndex((p) => Math.hypot(p.x - dragTo.x, p.y - dragTo.y) < 0.1);
-    assert.ok(movedIndex >= 0 && movedIndex !== 2, "Dragged point must exist at a shifted index");
+    assert.equal(movedIndex, 2, "Soft dragging must preserve the grabbed anchor's index");
+    assert.equal(softMoved.points.length, initial.points.length, "Soft dragging must not add boundary points");
+    assert.equal(softMoved.segments.length, initial.segments.length);
+    assert.deepEqual(await persistedContour({ provider, index: 0 }), softMoved);
     await click("#deletePointButton");
     if (!await client.evaluate('document.querySelector("#deletePreviewActions").hidden')) await click("#applyDeleteButton");
     await waitFor(saved, "soft moved point deletion saved");
@@ -145,6 +146,11 @@ try {
     await click("#undoButton"); await waitFor(saved, "soft drag undone");
     assert.deepEqual(await current(0), initial);
     assert.deepEqual(await persistedContour({ provider, index: 0 }), initial);
+    await click("#redoButton"); await waitFor(saved, "soft drag redone");
+    assert.deepEqual(await current(0), softMoved);
+    assert.deepEqual(await persistedContour({ provider, index: 0 }), softMoved);
+    await click("#undoButton"); await waitFor(saved, "soft drag restored");
+    assert.deepEqual(await current(0), initial);
     await click("#softDragToggle");
     await client.evaluate(`document.querySelector("#softRadiusInput").value = ${JSON.stringify(originalRadius)}; document.querySelector("#softRadiusInput").dispatchEvent(new Event("input", {bubbles:true}))`);
     await waitFor(saved, "direct edit preferences restored");
@@ -280,8 +286,16 @@ try {
     await click("#cancelRedrawButton"); await waitFor(saved, "preview cancelled");
     await click('[data-edit-tool="points"]');
     await click("#softDragToggle");
-    await input({ from: redrawn.points[1], to: { x: redrawn.points[1].x + 35, y: redrawn.points[1].y + 8 } });
-    await waitFor(saved, "soft edit saved");
+    for (let step = 0; step < 3; step += 1) {
+      const before = await current(closedIndex);
+      await input({ from: before.points[1], to: { x: before.points[1].x + 8, y: before.points[1].y + 3 } });
+      await waitFor(saved, "repeated soft edit saved");
+      const after = await current(closedIndex);
+      assert.notDeepEqual(after.points[1], before.points[1]);
+      assert.equal(after.points.length, redrawn.points.length, "Repeated soft edits cannot accumulate anchors");
+      assert.equal(after.segments.length, redrawn.segments.length);
+      assert.deepEqual(await persistedContour({ provider, index: closedIndex }), after);
+    }
     const final = await read();
     const key = await client.evaluate('window.location.hash');
     await click("#exitProjectButton");

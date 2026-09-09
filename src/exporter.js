@@ -1,5 +1,5 @@
-import { finiteNumber, normalizePointToImage } from "./geometry.js?v=workspace-ux-1";
-import { contourPolyline, materializeContour, validateCurve } from "./contour-editing.js?v=workspace-ux-1";
+import { finiteNumber, normalizePointToImage } from "./geometry.js?v=workspace-ux-2";
+import { contourPolyline, materializeContour, validateCurve } from "./contour-editing.js?v=workspace-ux-2";
 
 function getShapeType(closed) {
   return closed ? "polygon" : "linestrip";

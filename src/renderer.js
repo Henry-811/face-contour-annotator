@@ -4,9 +4,9 @@ import {
   HANDLE_STROKE_WIDTH,
   SELECTED_CONTOUR_HALO_WIDTH,
   SELECTED_CONTOUR_LINE_WIDTH,
-} from "./config.js?v=workspace-ux-1";
-import { getContourSegments } from "./geometry.js?v=workspace-ux-1";
-import { contourPolyline, transformHandles, sampleContour } from "./contour-editing.js?v=workspace-ux-1";
+} from "./config.js?v=workspace-ux-2";
+import { getContourSegments } from "./geometry.js?v=workspace-ux-2";
+import { contourPolyline, transformHandles, sampleContour } from "./contour-editing.js?v=workspace-ux-2";
 
 const LABEL_GAP = 5;
 const LABEL_COLLISION_GAP = 3;

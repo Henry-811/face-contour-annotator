@@ -28,9 +28,12 @@ new project system, or unrelated visual redesign.
    navigation/other edits must explicitly discard them, and refresh warns.
 4. **Soft edit:** optional advanced checkbox in Points, with a visible affected
    arc and adjustable radius. Grabbed point follows the pointer without the old
-   32-image-pixel movement cap. Sparse initial contours respond by automatically
-   splitting exact curve points at the affected arc's boundaries. Radius is in
-   screen pixels and converted to image coordinates at gesture start.
+   32-image-pixel movement cap. Nearby existing anchors follow with an arc-length
+   falloff; dragging never inserts or removes anchors, including after repeated
+   edits. Radius is in screen pixels and converted to image coordinates at
+   gesture start. Sparse curves may deform beyond the highlighted radius within
+   an adjacent cubic segment: use explicit Add point for finer local control,
+   rather than automatically splitting the curve at the influence boundaries.
 5. Every committed edit is undoable/redoable and uses the existing autosave queue,
    save barrier, conflict protection, and error UI. No source images are changed.
 6. Rendering, curve hit-testing, redraw preview, and exported sampled points use
@@ -39,8 +42,41 @@ new project system, or unrelated visual redesign.
 
 The canvas-first workspace layout and complete point-interaction acceptance
 criteria are maintained in [annotation-workspace-ux.md](annotation-workspace-ux.md).
-The production module graph uses one release query (`workspace-ux-1`) consistently;
+The production module graph uses one release query (`workspace-ux-2`) consistently;
 updating only the entry script does not invalidate stale imported modules.
+
+## Fixed-anchor soft editing / acceptance update
+
+- **Requirement source:** the user approved separating soft movement from point
+  insertion for annotators refining initialized facial contours. Completion
+  means soft dragging changes positions without increasing editing complexity.
+- **Terms and rules:** an anchor is a selectable, saved `curve.anchors` point;
+  sampled export `points` are a derived polyline, not editable anchors. Soft edit
+  changes existing positions only; Add point is explicit insertion. No schema,
+  migration, folder permissions or saving protocol changes.
+- **Flow and recovery:** select an anchor → drag with optional soft falloff →
+  one undo/autosave entry. Clicks and sub-threshold motion do not edit. Explicit
+  insertion/deletion remains available; Undo/Redo restore full geometry. Existing
+  save failures retain the current work and use the existing retry/backup UI.
+- **Boundaries and non-goals:** preserve historical subdivisions, anchor order,
+  open endpoints and closed seams. No automatic cleanup, extra controls, UI
+  redesign, source-image changes or FBX changes. Existing empty/busy guards,
+  pointer ownership and image-coordinate clamping remain in effect.
+
+| Acceptance scenario | Risk / verification |
+| --- | --- |
+| Given sparse/dense open or closed curves, when repeatedly soft-dragging at different radii, then anchor/segment counts and grabbed index stay fixed | Geometry unit tests; real app pointer workflow test updated |
+| Given neighboring anchors within the radius, when dragging, then they follow with decreasing influence, while out-of-range anchors and wholly unaffected segments stay fixed | Geometry unit tests, including the closed seam and image boundary |
+| Given a soft edit, when serializing and reopening, then editable anchor positions/counts are retained | Real serializer/importer and folder-record validation tests |
+| Given an existing anchor, when clicking or making sub-threshold motion, then selection/deletion targets stay correct; real drags remain undoable/redoable | Existing dual-provider browser test updated; manual execution in this code-only handoff |
+| Given an explicit Add point or deletion, when applied, then only that requested operation changes anchor count | Existing geometry and browser insertion/deletion regressions |
+
+This handoff runs non-browser regression and syntax checks only, per the user's
+request. The browser workflow is kept current but not executed; interaction feel,
+reload and actual folder-save acceptance remain for the user's manual review.
+The 31 non-browser regression results, JavaScript syntax checks and
+`git diff --check` passed. This update supersedes the automatic soft-boundary
+preparation described in the historical verification record below.
 
 ## Design decision / data evolution
 

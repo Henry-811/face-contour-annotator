@@ -1,4 +1,4 @@
-import { getInterpolatingCurveSegments, getSegmentDistance as projectPointOnSegment, pointInPolygon } from "./geometry.js?v=workspace-ux-1";
+import { getInterpolatingCurveSegments, getSegmentDistance as projectPointOnSegment, pointInPolygon } from "./geometry.js?v=workspace-ux-2";
 
 export const CURVE_TOLERANCE = 0.2; // Original-image pixels, independent of zoom.
 const MAX_SUBDIVISION_DEPTH = 12;
@@ -137,52 +137,7 @@ function boundPoint({ point, imageSize }) {
   return { x: Math.max(0, Math.min(imageSize.width, point.x)), y: Math.max(0, Math.min(imageSize.height, point.y)) };
 }
 
-export function prepareSoftEdit({ contour, pointIndex, radius, imageSize }) {
-  let result = materializeContour(contour);
-  if (radius <= 0) return { contour: result, pointIndex, fixedPointIndices: [] };
-  const samples = sampleContour(result);
-  let total = 0;
-  const offsets = samples.map((p, i) => {
-    if (i) total += distance(p, samples[i - 1]);
-    return total;
-  });
-  const centerSample = pointIndex === 0 ? 0 : samples.findIndex((p) => p.segmentIndex === pointIndex - 1 && p.t === 1);
-  const center = offsets[centerSample];
-  if (contour.closed && radius >= total / 2) return { contour: result, pointIndex, fixedPointIndices: [] };
-  const boundaryOffsets = [center - radius, center + radius]
-    .map((d) => contour.closed ? (d + total) % total : Math.max(0, Math.min(total, d)))
-    .filter((d) => Math.abs(d - center) > EPSILON);
-  const cuts = boundaryOffsets.map((d) => {
-    const index = Math.max(1, offsets.findIndex((offset) => offset >= d));
-    const a = samples[index - 1], b = samples[index];
-    const t = (d - offsets[index - 1]) / Math.max(EPSILON, offsets[index] - offsets[index - 1]);
-    const startT = a.segmentIndex === b.segmentIndex ? a.t : 0;
-    const refined = refineCurvePosition({ segment: curveSegments(result)[b.segmentIndex], point: lerp({ a, b, t }), from: startT, to: b.t });
-    return { segmentIndex: b.segmentIndex, segmentT: refined.t };
-  }).sort((a, b) => (b.segmentIndex + b.segmentT) - (a.segmentIndex + a.segmentT));
-  const fixedPointIndices = [];
-  for (const [cutIndex, cut] of cuts.entries()) {
-    const boundary = splitSegment({ segment: curveSegments(result)[cut.segmentIndex], t: cut.segmentT })[0].end;
-    // Historical splines can leave the image even though their anchors are
-    // inside. Keep that existing segment instead of inserting an invalid anchor.
-    if (imageSize && !isPointInsideImage({ point: boundary, imageSize })) continue;
-    const insertion = insertCurvePoint({ contour: result, ...cut, imageSize });
-    if (insertion.contour.points.length > result.points.length) {
-      if (insertion.pointIndex <= pointIndex) pointIndex += 1;
-      fixedPointIndices.forEach((index, i) => { if (index >= insertion.pointIndex) fixedPointIndices[i] += 1; });
-      // Descending cuts can share an original segment. The unsplit remainder
-      // now has a shorter parameter interval.
-      cuts.slice(cutIndex + 1).forEach((next) => {
-        if (next.segmentIndex === cut.segmentIndex) next.segmentT /= cut.segmentT;
-      });
-    }
-    fixedPointIndices.push(insertion.pointIndex);
-    result = insertion.contour;
-  }
-  return { contour: result, pointIndex, fixedPointIndices };
-}
-
-export function moveCurvePoint({ contour, pointIndex, point, imageSize, radius = 0, fixedPointIndices = [] }) {
+export function moveCurvePoint({ contour, pointIndex, point, imageSize, radius = 0 }) {
   const result = materializeContour(contour);
   const origin = result.points[pointIndex];
   const target = boundPoint({ point, imageSize });
@@ -196,8 +151,8 @@ export function moveCurvePoint({ contour, pointIndex, point, imageSize, radius =
     for (let i = 1; i < samples.length; i += 1) total += distance(samples[i - 1], samples[i]);
     offsets.push(total);
   });
+  // Soft editing only weights existing anchors; insertion is an explicit action.
   const weights = result.points.map((_, i) => {
-    if (fixedPointIndices.includes(i)) return 0;
     if (!radius) return i === pointIndex ? 1 : 0;
     let d = Math.abs(offsets[i] - offsets[pointIndex]);
     if (result.closed) d = Math.min(d, total - d);
