@@ -2,6 +2,8 @@
 .app {
   --panel: #fbfaf4; --canvas: #e5e8e4; --ink: #1d2622; --muted: #637069;
   --line: #d6dcd6; --accent: #087e6b; --radius: 5px; --inspector-width: 280px;
+  --danger: #a23c26; --danger-line: #e1b9af; --danger-hover: #fbece7;
+  --progress-ink: #805500; --progress-fill: #fff2cc; --progress-line: #e4c574;
   display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden;
   color: var(--ink); background: var(--panel); font: 14px/1.4 "Segoe UI", "Aptos", sans-serif;
 }
@@ -76,6 +78,7 @@
 .navigation-buttons, .task-actions { display: flex; align-items: center; gap: 8px; }
 .position { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .task-status { color: var(--muted); font-size: 12px; margin-left: auto; }
+.task-status[data-status="in_progress"] { color: var(--progress-ink); font-weight: 600; }
 .app .task-actions .primary-button { color: white; background: var(--accent); min-width: 96px; margin-left: 8px; font-weight: 600; }
 .app .task-actions .primary-button:hover { background: #066b5a; }
 .workspace-menu { position: relative; }
@@ -89,12 +92,16 @@
 .file-panel { width: 320px; right: 12px; }
 .object-menu > summary { padding: 12px 0; font-size: 12px; color: var(--muted); }
 .object-menu .menu-panel { position: static; width: auto; box-shadow: none; border: 0; padding: 0; }
-.app .danger { color: #a23c26; }
+.app button.danger:not(:disabled) { color: var(--danger); }
+.app .context-options button.danger:not(:disabled) { border-color: var(--danger-line); }
+.app button.danger:hover:not(:disabled) { border-color: var(--danger-line); background: var(--danger-hover); }
 .queue-disclosure > summary { border: 1px solid var(--line); list-style: none; background: #fffef9; }
 .app .queue-disclosure { margin-top: 0; }
 .queue-panel { top: auto; bottom: calc(100% + 12px); left: 0; right: auto; width: 400px; }
 .queue-panel header { display: flex; justify-content: space-between; padding: 12px; font-size: 12px; }
-.app .queue-item { display: flex; gap: 12px; padding: 8px; }
+.app .queue-panel .queue-item { display: grid; grid-template-columns: minmax(0, 1fr) 110px; align-items: center; gap: 12px; padding: 8px; }
+.app .status-badge { font-size: 11px; }
+.app .status-badge.in_progress { color: var(--progress-ink); background: var(--progress-fill); border-color: var(--progress-line); }
 .queue-panel .queue-list { max-height: 40vh; }
 .queue-panel .queue-pagination button { width: auto; }
 .save-error { display: flex; align-items: center; gap: 12px; background: #fff0e4; color: #733c21; border-bottom: 1px solid #e3bea4; padding: 8px 24px; font-size: 12px; flex: 0 0 auto; }

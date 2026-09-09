@@ -1527,7 +1527,9 @@ function renderProjectPanel() {
   elements.imageQueueSummary.textContent = `${images.length} ${images.length === 1 ? "image" : "images"}`;
   elements.projectName.textContent = project?.name || "No image set";
   elements.projectName.title = project?.name || "";
-  elements.currentImageStatus.textContent = getStatusLabel(getCurrentProjectImageRecord()?.status);
+  const currentStatus = getCurrentProjectImageRecord()?.status || "unlabeled";
+  elements.currentImageStatus.textContent = getStatusLabel(currentStatus);
+  elements.currentImageStatus.dataset.status = currentStatus;
   elements.projectProgress.textContent = `${progress.done} done, ${progress.in_progress} active`;
   renderProjectSaveState();
   elements.previousImageButton.disabled =

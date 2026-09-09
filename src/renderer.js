@@ -18,8 +18,9 @@ const LABEL_LINE_COLLISION_WEIGHT = 10000;
 const LABEL_LABEL_COLLISION_WEIGHT = 100000;
 const GEOMETRY_EPSILON = 0.000001;
 const CANVAS_PADDING = 36;
-const EDIT_HANDLE_RADIUS = 2.8;
-const SELECTED_HANDLE_RADIUS = 4.5;
+// Display sizes are screen pixels; the separate hit radius is unchanged.
+const EDIT_HANDLE_RADIUS = 2.2;
+const SELECTED_HANDLE_RADIUS = 3.5;
 const MAX_FIT_SCALE = 1.75;
 const MIN_CANVAS_SCALE = 0.08;
 
