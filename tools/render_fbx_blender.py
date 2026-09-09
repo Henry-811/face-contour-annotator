@@ -1,12 +1,13 @@
 import argparse
 import bmesh
+import json
 import math
 import sys
 import traceback
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Euler, Vector
 
 
 HEAD_MESH_KEYWORDS = ("head", "eye", "teeth", "saliva", "lash")
@@ -24,8 +25,39 @@ def parse_args():
     parser.add_argument("--fbx", required=True, help="Path to the FBX file.")
     parser.add_argument("--texture", default="", help="Optional Basecolor texture path.")
     parser.add_argument("--eye-texture", default="", help="Optional eye texture applied to eye meshes.")
-    parser.add_argument("--output", required=True, help="Output PNG path.")
+    parser.add_argument(
+        "--hide-untextured-lashes",
+        action="store_true",
+        help="Hide eyelash card meshes when no matching transparent lash texture is available.",
+    )
+    parser.add_argument(
+        "--hide-mesh",
+        action="append",
+        default=[],
+        help="Exact mesh name to hide without changing camera framing; repeat as needed.",
+    )
+    parser.add_argument(
+        "--eyebrow-mask",
+        default="",
+        help="Optional UV-space eyebrow mask blended over the skin Basecolor.",
+    )
+    parser.add_argument(
+        "--eyebrow-color",
+        default="0.08,0.05,0.03",
+        help="Linear RGB eyebrow color as three comma-separated values in [0, 1].",
+    )
+    parser.add_argument("--output", default="", help="Output PNG path for a single render.")
+    parser.add_argument(
+        "--render-plan",
+        default="",
+        help="Optional JSON plan containing multiple output paths and poses for one imported FBX.",
+    )
     parser.add_argument("--resolution", type=int, default=1024, help="Square output resolution.")
+    parser.add_argument(
+        "--stable-framing",
+        action="store_true",
+        help="Share framing and lights across the entire render plan using visible geometry.",
+    )
     parser.add_argument(
         "--material-mode",
         choices=("basecolor", "pbr"),
@@ -62,6 +94,12 @@ def parse_args():
         default="1",
         help="Camera side along the detected depth axis.",
     )
+    parser.add_argument(
+        "--axis-mode",
+        choices=("y-up-z-depth", "auto"),
+        default="y-up-z-depth",
+        help="Use this asset set's Y-up/Z-depth axes or infer axes from mesh spans.",
+    )
     parser.add_argument("--yaw", type=float, default=0.0, help="Model yaw in degrees.")
     parser.add_argument("--pitch", type=float, default=0.0, help="Model pitch in degrees.")
     parser.add_argument("--roll", type=float, default=0.0, help="Model roll in degrees.")
@@ -80,7 +118,10 @@ def parse_args():
         argv = argv[argv.index("--") + 1 :]
     else:
         argv = argv[1:]
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if bool(args.output) == bool(args.render_plan):
+        parser.error("provide exactly one of --output or --render-plan")
+    return args
 
 
 def clear_scene():
@@ -122,12 +163,39 @@ def connect_first_available(links, output_socket, node, input_names):
     return None
 
 
+def parse_rgb_color(value):
+    try:
+        channels = tuple(float(channel.strip()) for channel in value.split(","))
+    except ValueError as error:
+        raise ValueError(f"Invalid RGB color: {value}") from error
+    if len(channels) != 3 or any(
+        not math.isfinite(channel) or channel < 0 or channel > 1 for channel in channels
+    ):
+        raise ValueError(f"RGB color must contain three finite values in [0, 1]: {value}")
+    return channels
+
+
+def blend_eyebrows(*, nodes, links, basecolor_output, mask_path, color):
+    if not mask_path:
+        return basecolor_output
+
+    mask_node = make_image_node(nodes, mask_path, non_color=True)
+    mix_node = nodes.new(type="ShaderNodeMixRGB")
+    mix_node.blend_type = "MIX"
+    links.new(mask_node.outputs["Color"], mix_node.inputs[0])
+    links.new(basecolor_output, mix_node.inputs[1])
+    mix_node.inputs[2].default_value = (*color, 1.0)
+    return mix_node.outputs["Color"]
+
+
 def make_basecolor_material(
     texture_path,
     *,
     map_paths=None,
     material_mode="basecolor",
     material_name=None,
+    eyebrow_mask_path=None,
+    eyebrow_color=(0.08, 0.05, 0.03),
 ):
     map_paths = map_paths or {}
     material = bpy.data.materials.new(name=material_name or f"{material_mode}_Material")
@@ -137,12 +205,18 @@ def make_basecolor_material(
     links = material.node_tree.links
 
     image_node = make_image_node(nodes, texture_path)
+    basecolor_output = blend_eyebrows(
+        nodes=nodes,
+        links=links,
+        basecolor_output=image_node.outputs["Color"],
+        mask_path=eyebrow_mask_path,
+        color=eyebrow_color,
+    )
 
     if material_mode == "pbr":
         bsdf_node = nodes.new(type="ShaderNodeBsdfPrincipled")
         output_node = nodes.new(type="ShaderNodeOutputMaterial")
 
-        basecolor_output = image_node.outputs["Color"]
         cavity_path = map_paths.get("cavity")
         if cavity_path:
             try:
@@ -190,7 +264,7 @@ def make_basecolor_material(
     emission_node.inputs["Strength"].default_value = 1.0
 
     output_node = nodes.new(type="ShaderNodeOutputMaterial")
-    links.new(image_node.outputs["Color"], emission_node.inputs["Color"])
+    links.new(basecolor_output, emission_node.inputs["Color"])
     links.new(emission_node.outputs["Emission"], output_node.inputs["Surface"])
     return material
 
@@ -226,6 +300,28 @@ def hide_unsupported_meshes(meshes):
         mesh.hide_render = hide
 
 
+def hide_untextured_lashes(meshes):
+    hidden = []
+    for mesh in meshes:
+        if mesh_role(mesh) != "lash":
+            continue
+        mesh.hide_viewport = True
+        mesh.hide_render = True
+        hidden.append(mesh.name)
+    return hidden
+
+
+def hide_named_meshes(*, meshes, names):
+    by_name = {mesh.name: mesh for mesh in meshes}
+    missing = sorted(set(names) - by_name.keys())
+    if missing:
+        raise ValueError(f"Requested hidden meshes not found: {missing}")
+    for name in names:
+        # Keep dependency-graph transforms current for the existing camera bounds.
+        by_name[name].hide_render = True
+    return sorted(set(names))
+
+
 def resolve_texture_path(value):
     return Path(value).expanduser().resolve() if value else None
 
@@ -247,7 +343,16 @@ def validate_map_paths(map_paths):
             raise FileNotFoundError(f"{map_name} map not found: {map_path}")
 
 
-def apply_material(meshes, texture_path, material_mode, map_paths, component_materials):
+def apply_material(
+    meshes,
+    texture_path,
+    material_mode,
+    map_paths,
+    component_materials,
+    *,
+    eyebrow_mask_path=None,
+    eyebrow_color=(0.08, 0.05, 0.03),
+):
     if not texture_path:
         return
     texture = Path(texture_path)
@@ -259,6 +364,8 @@ def apply_material(meshes, texture_path, material_mode, map_paths, component_mat
         map_paths=map_paths,
         material_mode=material_mode,
         material_name=f"{material_mode}_Skin_Material",
+        eyebrow_mask_path=eyebrow_mask_path,
+        eyebrow_color=eyebrow_color,
     )
     if component_materials == "single":
         for mesh in meshes:
@@ -396,6 +503,15 @@ def get_axis_metadata(points):
     }
 
 
+def camera_axis_metadata(meshes, axis_mode, *, visible_only=False):
+    if visible_only:
+        meshes = [mesh for mesh in meshes if not mesh.hide_render]
+    axis = get_axis_metadata(mesh_world_points(meshes))
+    if axis_mode == "y-up-z-depth":
+        axis.update(vertical_axis=1, horizontal_axis=0, depth_axis=2)
+    return axis
+
+
 def object_vertex_points(meshes):
     points = []
     for obj in meshes:
@@ -409,6 +525,9 @@ def frame_bounds(meshes, crop, camera_axis=None):
     bounds_meshes = get_head_meshes(meshes) if crop == "head" else meshes
     points = mesh_world_points(bounds_meshes)
     axis = get_axis_metadata(points)
+    if camera_axis:
+        for key in ("vertical_axis", "horizontal_axis", "depth_axis"):
+            axis[key] = camera_axis[key]
     mins = axis["mins"]
     maxs = axis["maxs"]
     spans = axis["spans"]
@@ -419,7 +538,10 @@ def frame_bounds(meshes, crop, camera_axis=None):
         return center, scale, axis
 
     if bounds_meshes != meshes:
-        full_axis = camera_axis or get_axis_metadata(mesh_world_points(meshes))
+        full_axis = get_axis_metadata(mesh_world_points(meshes))
+        if camera_axis:
+            for key in ("vertical_axis", "horizontal_axis", "depth_axis"):
+                full_axis[key] = camera_axis[key]
         head_mins = mins
         head_maxs = maxs
         head_spans = spans
@@ -488,6 +610,67 @@ def axis_name(axis_index):
     return ("X", "Y", "Z")[axis_index]
 
 
+def prepare_stable_framing(*, meshes, render_items, camera_axis):
+    visible_meshes = [mesh for mesh in meshes if not mesh.hide_render]
+    if not visible_meshes or not render_items:
+        raise ValueError("Stable framing requires visible meshes and at least one pose.")
+    points = object_vertex_points(visible_meshes)
+    neutral_axis = get_axis_metadata(points)
+    pivot = Vector([
+        (low + high) / 2
+        for low, high in zip(neutral_axis["mins"], neutral_axis["maxs"])
+    ])
+    horizontal = camera_axis["horizontal_axis"]
+    vertical = camera_axis["vertical_axis"]
+    # Lighting uses the neutral asset scale, never the pose-dependent crop scale.
+    lighting_scale = max(neutral_axis["spans"][horizontal], neutral_axis["spans"][vertical]) * 1.05
+    low = [math.inf] * 3
+    high = [-math.inf] * 3
+    for item in render_items:
+        rotation = Euler(tuple(math.radians(item[key]) for key in ("pitch", "yaw", "roll")), "XYZ")
+        matrix = rotation.to_matrix()
+        for point in points:
+            transformed = pivot + matrix @ (point - pivot)
+            for index in range(3):
+                low[index] = min(low[index], transformed[index])
+                high[index] = max(high[index], transformed[index])
+    spans = [high[index] - low[index] for index in range(3)]
+    axis = dict(camera_axis, mins=low, maxs=high, spans=spans)
+    center = Vector([(low[index] + high[index]) / 2 for index in range(3)])
+    # Five percent margin on each side of the largest projected extent.
+    scale = max(spans[horizontal], spans[vertical]) * 1.10
+    if scale <= 0:
+        raise ValueError("Stable framing requires non-degenerate projected geometry.")
+    return pivot, center, scale, axis, lighting_scale
+
+
+def apply_stable_pose(*, root, pivot, pose):
+    root.rotation_euler = tuple(math.radians(pose[key]) for key in ("pitch", "yaw", "roll"))
+    # Rotate around the fixed asset center without changing the FBX parenting.
+    root.location = pivot - root.rotation_euler.to_matrix() @ pivot
+    bpy.context.view_layer.update()
+
+
+def render_rig_metadata():
+    scene = bpy.context.scene
+    camera = scene.camera
+    return {
+        "camera_location": list(camera.location),
+        "camera_rotation": list(camera.rotation_euler),
+        "ortho_scale": camera.data.ortho_scale,
+        "exposure": scene.view_settings.exposure,
+        "lights": {
+            obj.name: {
+                "location": list(obj.location),
+                "rotation": list(obj.rotation_euler),
+                "energy": obj.data.energy,
+                "size": obj.data.size if obj.data.type == "AREA" else obj.data.shadow_soft_size,
+            }
+            for obj in scene.objects if obj.type == "LIGHT"
+        },
+    }
+
+
 def configure_camera(center, scale, axis, depth_sign):
     camera_data = bpy.data.cameras.new("OrthographicCamera")
     camera = bpy.data.objects.new("OrthographicCamera", camera_data)
@@ -529,6 +712,47 @@ def configure_render(output_path, resolution):
         scene.view_settings.gamma = 1
     except Exception as error:
         print(f"Warning: color management setup skipped: {error}")
+
+
+def clear_render_rig():
+    for obj in list(bpy.context.scene.objects):
+        if obj.type in {"CAMERA", "LIGHT"}:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def load_render_items(*, output_path, render_plan_path, default_pose):
+    if output_path:
+        return [{"output": str(output_path), **default_pose}]
+
+    plan_path = Path(render_plan_path)
+    if not plan_path.exists():
+        raise FileNotFoundError(f"Render plan not found: {plan_path}")
+    with plan_path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    items = payload.get("renders") if isinstance(payload, dict) else payload
+    if not isinstance(items, list) or not items:
+        raise ValueError(f"Render plan must contain a non-empty renders array: {plan_path}")
+
+    normalized = []
+    seen_outputs = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict) or not item.get("output"):
+            raise ValueError(f"Render plan item {index} must contain an output path.")
+        output = str(Path(item["output"]).expanduser().resolve())
+        if output in seen_outputs:
+            raise ValueError(f"Render plan contains duplicate output path: {output}")
+        seen_outputs.add(output)
+        pose = {}
+        for field in ("yaw", "pitch", "roll"):
+            try:
+                value = float(item.get(field, 0.0))
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Render plan item {index} has invalid {field}.") from error
+            if not math.isfinite(value):
+                raise ValueError(f"Render plan item {index} has non-finite {field}.")
+            pose[field] = value
+        normalized.append({"output": output, **pose})
+    return normalized
 
 
 def point_object_at(obj, target):
@@ -581,21 +805,33 @@ def add_lights(center, axis, depth_sign, frame_scale):
 def main():
     args = parse_args()
     fbx_path = Path(args.fbx).expanduser()
-    output_path = Path(args.output).expanduser()
+    output_path = Path(args.output).expanduser() if args.output else None
     texture_path = Path(args.texture).expanduser() if args.texture else None
     eye_texture_path = Path(args.eye_texture).expanduser() if args.eye_texture else None
+    eyebrow_mask_path = Path(args.eyebrow_mask).expanduser() if args.eyebrow_mask else None
+    eyebrow_color = parse_rgb_color(args.eyebrow_color)
     if not fbx_path.exists():
         raise FileNotFoundError(f"FBX not found: {fbx_path}")
     if texture_path and not texture_path.exists():
         raise FileNotFoundError(f"Texture not found: {texture_path}")
     if eye_texture_path and not eye_texture_path.exists():
         raise FileNotFoundError(f"Eye texture not found: {eye_texture_path}")
+    if eyebrow_mask_path and not eyebrow_mask_path.exists():
+        raise FileNotFoundError(f"Eyebrow mask not found: {eyebrow_mask_path}")
     fbx_path = fbx_path.resolve()
-    output_path = output_path.resolve()
+    if output_path:
+        output_path = output_path.resolve()
     if texture_path:
         texture_path = texture_path.resolve()
     if eye_texture_path:
         eye_texture_path = eye_texture_path.resolve()
+    if eyebrow_mask_path:
+        eyebrow_mask_path = eyebrow_mask_path.resolve()
+    render_items = load_render_items(
+        output_path=output_path,
+        render_plan_path=args.render_plan,
+        default_pose={"yaw": args.yaw, "pitch": args.pitch, "roll": args.roll},
+    )
     map_paths = {}
     if args.auto_maps:
         map_paths.update(auto_map_paths(texture_path))
@@ -606,47 +842,92 @@ def main():
         "cavity": resolve_texture_path(args.cavity),
     }
     map_paths.update({map_name: map_path for map_name, map_path in explicit_map_paths.items() if map_path})
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     clear_scene()
     imported, meshes = import_fbx(fbx_path)
-    apply_material(meshes, texture_path, args.material_mode, map_paths, args.component_materials)
+    apply_material(
+        meshes,
+        texture_path,
+        args.material_mode,
+        map_paths,
+        args.component_materials,
+        eyebrow_mask_path=eyebrow_mask_path,
+        eyebrow_color=eyebrow_color,
+    )
     apply_eye_material(
         meshes=meshes,
         eye_texture_path=eye_texture_path,
         material_mode=args.material_mode,
     )
-    set_origins_and_rotation(imported, args.yaw, args.pitch, args.roll)
+    render_root = set_origins_and_rotation(imported, 0.0, 0.0, 0.0)
     bpy.context.view_layer.update()
-    camera_axis = get_axis_metadata(mesh_world_points(meshes))
     if args.crop == "head" and args.head_only:
         meshes = hide_non_head_meshes(meshes)
     if args.crop == "head" and args.clip_body:
         clip_body_to_head_region(meshes)
     bpy.context.view_layer.update()
-
-    center, scale, axis = frame_bounds(meshes, args.crop, camera_axis)
-    configure_camera(center, scale, axis, args.depth_sign)
-    add_lights(center, axis, args.depth_sign, scale)
-    configure_render(output_path, args.resolution)
+    camera_axis = camera_axis_metadata(meshes, args.axis_mode)
     if args.component_materials == "hide-unsupported":
         hide_unsupported_meshes(meshes)
-    bpy.ops.render.render(write_still=True)
+    hidden_lashes = hide_untextured_lashes(meshes) if args.hide_untextured_lashes else []
+    if args.hide_untextured_lashes:
+        print("Hidden untextured lash meshes", hidden_lashes)
+    hidden_explicit = hide_named_meshes(meshes=meshes, names=args.hide_mesh)
+    print("Hidden explicit meshes", hidden_explicit)
 
-    print(
-        "Rendered",
-        {
-            "fbx": str(fbx_path),
-            "texture": str(texture_path) if texture_path else "",
-            "eye_texture": str(eye_texture_path) if eye_texture_path else "",
-            "material_mode": args.material_mode,
-            "component_materials": args.component_materials,
-            "maps": {key: str(value) for key, value in map_paths.items()},
-            "output": str(output_path),
-            "crop": args.crop,
-            "axis": axis,
-        },
-    )
+    if args.stable_framing:
+        camera_axis = camera_axis_metadata(meshes=meshes, axis_mode=args.axis_mode, visible_only=True)
+        pivot, center, scale, axis, lighting_scale = prepare_stable_framing(
+            meshes=meshes, render_items=render_items, camera_axis=camera_axis,
+        )
+        clear_render_rig()
+        configure_camera(center=center, scale=scale, axis=axis, depth_sign=args.depth_sign)
+        add_lights(center=pivot, axis=axis, depth_sign=args.depth_sign, frame_scale=lighting_scale)
+
+    for render_item in render_items:
+        if args.stable_framing:
+            apply_stable_pose(root=render_root, pivot=pivot, pose=render_item)
+        else:
+            render_root.rotation_euler = (
+                math.radians(render_item["pitch"]),
+                math.radians(render_item["yaw"]),
+                math.radians(render_item["roll"]),
+            )
+            bpy.context.view_layer.update()
+            center, scale, axis = frame_bounds(meshes, args.crop, camera_axis)
+            clear_render_rig()
+            configure_camera(center, scale, axis, args.depth_sign)
+            add_lights(center, axis, args.depth_sign, scale)
+        render_output_path = Path(render_item["output"])
+        render_output_path.parent.mkdir(parents=True, exist_ok=True)
+        configure_render(render_output_path, args.resolution)
+        bpy.ops.render.render(write_still=True)
+
+        print(
+            "Rendered",
+            {
+                "fbx": str(fbx_path),
+                "texture": str(texture_path) if texture_path else "",
+                "eye_texture": str(eye_texture_path) if eye_texture_path else "",
+                "eyebrow_mask": str(eyebrow_mask_path) if eyebrow_mask_path else "",
+                "material_mode": args.material_mode,
+                "component_materials": args.component_materials,
+                "hidden_lash_meshes": hidden_lashes,
+                "hidden_meshes": sorted(mesh.name for mesh in meshes if mesh.hide_render),
+                "maps": {key: str(value) for key, value in map_paths.items()},
+                "output": str(render_output_path),
+                "crop": args.crop,
+                "stable_framing": args.stable_framing,
+                "rotation_pivot": list(pivot) if args.stable_framing else [0.0, 0.0, 0.0],
+                "rig": render_rig_metadata(),
+                "pose": {
+                    "yaw": render_item["yaw"],
+                    "pitch": render_item["pitch"],
+                    "roll": render_item["roll"],
+                },
+                "axis": axis,
+            },
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
