@@ -175,8 +175,6 @@ const elements = {
   statusText: document.getElementById("statusText"),
   newContourLabel: document.getElementById("newContourLabel"),
   selectedContourLabel: document.getElementById("selectedContourLabel"),
-  selectedProperties: document.getElementById("selectedProperties"),
-  selectedContourMeta: document.getElementById("selectedContourMeta"),
   selectionCaption: document.getElementById("selectionCaption"),
   pointActions: document.getElementById("pointActions"),
   addPointButton: document.getElementById("addPointButton"),
@@ -1372,7 +1370,7 @@ function updateCommandState() {
   syncModeControls();
   const busy = state.projectOperationBusy || Boolean(state.redraw || state.deletePreview) || Boolean(state.interaction && state.interaction.type !== "pan");
   elements.newContourLabel.disabled = busy;
-  elements.selectedContourLabel.disabled = busy;
+  elements.selectedContourLabel.disabled = busy || !state.selectedId;
   elements.contourList.querySelectorAll("button, select").forEach((control) => { control.disabled = busy; });
   elements.contourList.inert = busy;
   elements.undoButton.disabled = busy || state.undoStack.length === 0;
@@ -1456,7 +1454,14 @@ function renderLabels() {
     LABELS.forEach((label) => {
       const option = document.createElement("option");
       option.value = label.id;
-      option.textContent = label.name;
+      const swatch = document.createElement("span");
+      swatch.className = "label-swatch";
+      swatch.style.backgroundColor = label.color;
+      swatch.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.className = "label-name";
+      name.textContent = label.name;
+      option.append(swatch, name);
       select.appendChild(option);
     });
   }
@@ -1482,6 +1487,7 @@ function renderContourList() {
     item.classList.toggle("is-selected", contour.id === state.selectedId);
     item.setAttribute("aria-pressed", String(contour.id === state.selectedId));
     item.setAttribute("aria-label", `${label.name}, ${contour.points.length} points`);
+    item.title = `${contour.closed ? "Closed curve" : "Open curve"} · ${contour.points.length} points`;
     const swatch = document.createElement("span");
     swatch.className = "swatch";
     swatch.style.background = label.color;
@@ -1496,19 +1502,13 @@ function renderContourList() {
     if (contour.id === focusedId) item.focus({ preventScroll: true });
   });
   const selected = state.contours.find((contour) => contour.id === state.selectedId);
-  elements.selectedProperties.hidden = !selected;
-  elements.selectionCaption.replaceChildren();
+  elements.selectedContourLabel.hidden = !selected;
+  elements.selectionCaption.textContent = selected ? "Editing" : "Select a contour";
   if (selected) {
     elements.selectedContourLabel.value = selected.label;
-    elements.selectedContourMeta.textContent = `${selected.closed ? "Closed curve" : "Open curve"} · ${selected.points.length} points`;
-    const dot = document.createElement("span");
-    dot.className = "swatch";
-    dot.style.background = getLabel(selected.label).color;
-    const name = document.createElement("strong");
-    name.textContent = getLabel(selected.label).name;
-    elements.selectionCaption.append(dot, "Editing ", name);
+    elements.deleteButton.title = `Delete selected contour: ${getLabel(selected.label).name}. Undo is available.`;
   } else {
-    elements.selectionCaption.textContent = "Select a contour";
+    elements.deleteButton.title = "Select a contour to delete it.";
   }
 }
 

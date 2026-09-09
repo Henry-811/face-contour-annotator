@@ -896,7 +896,7 @@
               <button type="button" data-edit-tool="points" aria-pressed="true">Edit points</button>
               <button type="button" data-edit-tool="transform" aria-pressed="false">Transform</button>
               <button type="button" data-edit-tool="redraw" aria-pressed="false">Redraw section</button>
-              <button type="button" class="mode-button" data-mode="draw" aria-pressed="false">New contour</button>
+              <button type="button" class="mode-button" data-mode="draw" aria-pressed="false">Draw</button>
             </div>
             <div class="divider history-divider"></div>
             <div class="history-actions" id="actionsSection">
@@ -913,7 +913,13 @@
           </div>
           <div class="context-bar">
             <section id="refineToolsSection" class="context-options">
-              <span class="selection-caption" id="selectionCaption">Select a contour</span>
+              <div class="contour-selection">
+                <span class="selection-caption" id="selectionCaption">Select a contour</span>
+                <select id="selectedContourLabel" class="label-select" aria-label="Selected contour label" hidden>
+                  <button type="button"><selectedcontent></selectedcontent></button>
+                </select>
+                <button id="deleteButton" class="danger" type="button">Delete contour</button>
+              </div>
               <div class="context-options" id="pointActions">
                 <button id="addPointButton" type="button" aria-pressed="false">+ Add point</button>
                 <button id="deletePointButton" class="danger" type="button">Delete point</button>
@@ -932,7 +938,9 @@
             </section>
             <section id="drawToolsSection" class="context-options" hidden>
               <label for="newContourLabel">Label</label>
-              <select id="newContourLabel"></select>
+              <select id="newContourLabel" class="label-select">
+                <button type="button"><selectedcontent></selectedcontent></button>
+              </select>
               <button class="shape-mode-button" data-shape="open" type="button">Open line</button>
               <button class="shape-mode-button" data-shape="closed" type="button">Closed region</button>
               <button id="finishDraftButton" type="button">Finish</button>
@@ -964,12 +972,6 @@
           <div class="inspector-scroll">
             <div class="list-caption"><span>Feature</span><span>Points</span></div>
             <section class="contour-list" id="contourList" aria-label="Contour objects"></section>
-            <section class="selected-properties" id="selectedProperties" hidden>
-              <h3>Selected contour</h3>
-              <label class="field-label" for="selectedContourLabel">Label</label>
-              <select id="selectedContourLabel"></select>
-              <div class="property-meta" id="selectedContourMeta"></div>
-            </section>
             <section class="inspector-options">
               <details class="advanced">
                 <summary>Advanced editing</summary>
@@ -983,7 +985,6 @@
               <details class="workspace-menu object-menu" id="moreActionsDisclosure">
                 <summary>Contour actions</summary>
                 <div class="menu-panel">
-                  <button id="deleteButton" class="danger" type="button">Delete contour</button>
                   <button id="clearButton" class="danger" type="button">Clear all contours</button>
                 </div>
               </details>

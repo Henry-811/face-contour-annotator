@@ -35,14 +35,35 @@
 #zoomValue { width: 42px; text-align: center; font-variant-numeric: tabular-nums; }
 .context-bar { display: flex; align-items: center; min-height: 46px; padding: 5px 20px; flex: 0 0 auto; border-bottom: 1px solid var(--line); background: #f4f5ee; font-size: 12px; }
 .context-options { display: flex; gap: 8px; align-items: center; min-width: 0; }
-.context-bar > section { width: 100%; }
-.selection-caption { display: flex; gap: 8px; align-items: center; white-space: nowrap; margin-right: 12px; }
-.selection-caption strong { font-weight: 600; font-size: 13px; }
+.context-bar > section { width: 100%; flex-wrap: wrap; row-gap: 8px; }
+.contour-selection { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding-right: 12px; margin-right: 4px; border-right: 1px solid var(--line); }
+.selection-caption { color: var(--muted); white-space: nowrap; }
 .app .swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .app .context-options button { font-size: 12px; min-height: 28px; padding: 0 9px; border-color: var(--line); background: #fffef9; }
 .app .context-options button[aria-pressed="true"] { border-color: var(--accent); background: #dcece3; }
 .context-hint { color: var(--muted); margin-left: auto; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.context-options select { max-width: 160px; height: 29px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: white; }
+.app .label-select { width: 174px; max-width: 100%; min-height: 32px; padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: #fffef9; color: var(--ink); font: inherit; cursor: pointer; }
+.app .label-select:hover:not(:disabled) { border-color: #a6c7b7; background: #f3f8f0; }
+.app .label-select:disabled { color: var(--muted); opacity: .65; cursor: default; }
+/* Native pickers keep keyboard navigation and light-dismiss behavior. */
+@supports (appearance: base-select) {
+  .app .label-select, .app .label-select::picker(select) { appearance: base-select; }
+  .app .label-select { align-items: center; gap: 10px; }
+  .app .label-select > button { display: flex; align-items: center; flex: 1; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+  .label-select selectedcontent { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .label-select .label-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .label-select .label-swatch { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; }
+  .app .label-select::picker-icon { color: var(--muted); }
+  .app .label-select:open { border-color: var(--accent); }
+  .app .label-select:open::picker-icon { rotate: 180deg; color: var(--accent); }
+  .app .label-select::picker(select) { min-width: 210px; max-width: calc(100vw - 24px); max-height: min(420px, 55vh); overflow-y: auto; overscroll-behavior: contain; padding: 6px; margin-block: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); font: 13px/1.4 "Segoe UI", "Aptos", sans-serif; box-shadow: 0 10px 28px rgba(24, 37, 28, .14); }
+  .label-select option { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 7px 10px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
+  .label-select option:checked { background: #dcece3; color: #17654d; font-weight: 600; }
+  .label-select option:hover, .label-select option:focus { background: #edf0e9; color: var(--ink); }
+  .label-select option:checked:hover, .label-select option:checked:focus { background: #cde4d7; color: #17654d; }
+  .label-select option:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .label-select option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
+}
 .stage-meta { display: flex; align-items: center; gap: 20px; padding: 0 24px; height: 36px; color: var(--muted); font-size: 11px; flex: 0 0 auto; }
 .app .file-meta { font-size: 11px; font-weight: 400; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stage-meta #imageSize { margin-left: auto; white-space: nowrap; }
@@ -62,11 +83,6 @@
 .app .contour-item { width: 100%; min-height: 40px; margin: 0; padding: 0 12px; border: 0; border-radius: 3px; display: flex; align-items: center; gap: 12px; text-align: left; font-size: 13px; background: transparent; box-shadow: none; }
 .app .contour-item[aria-pressed="true"] { background: #e1eee5; color: #1c5b43; font-weight: 600; }
 .point-count { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
-.selected-properties { border-top: 1px solid var(--line); margin-top: 20px; padding: 20px 20px 0; }
-.selected-properties h3 { font-size: 12px; font-weight: 600; margin: 0 0 16px; }
-.field-label { color: var(--muted); font-size: 11px; display: block; margin-bottom: 6px; }
-#selectedContourLabel { width: 100%; height: 35px; border: 1px solid var(--line); border-radius: 5px; padding: 0 10px; background: #fffef9; font-size: 13px; }
-.property-meta { font-size: 11px; color: var(--muted); margin-top: 12px; }
 .inspector-options { padding: 0 20px 20px; }
 .advanced { margin-top: 20px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .advanced summary { padding: 12px 0; font-size: 12px; cursor: pointer; }
@@ -110,7 +126,8 @@
 .inspector-toggle, .close-inspector { display: none; }
 @media (min-width: 1700px) { .app { --inspector-width: 296px; } .project-bar { height: 72px; } .tool-bar { gap: 16px; } .app .tool-group button { padding: 0 16px; } .app .contour-item { min-height: 43px; } }
 @media (max-width: 1450px) { .context-hint { font-size: 10px; } .tool-bar { gap: 8px; padding-inline: 16px; } .app .tool-group button { padding-inline: 9px; font-size: 12px; } .app .history-actions button { padding-inline: 6px; } .app .initialize-button { padding-inline: 12px; } .project-bar { gap: 12px; } }
-@media (max-height: 850px) { .project-bar { height: 58px; } .tool-bar, .app .inspector-header { min-height: 50px; height: 50px; } .context-bar { min-height: 40px; } .task-bar { height: 56px; } .app .contour-item { min-height: 35px; } .selected-properties { padding-top: 16px; margin-top: 12px; } }
+@media (max-height: 850px) { .project-bar { height: 58px; } .tool-bar, .app .inspector-header { min-height: 50px; height: 50px; } .context-bar { min-height: 40px; } .task-bar { height: 56px; } .app .contour-item { min-height: 35px; } }
+@media (max-width: 650px) { .contour-selection { flex-wrap: wrap; flex-basis: 100%; flex-shrink: 1; padding-right: 0; margin-right: 0; border-right: 0; } }
 @media (max-width: 1200px) { .context-hint { display: none; } .tool-bar { flex-wrap: wrap; height: auto; } .project-identity { max-width: 200px; } .header-actions { gap: 4px; } .history-divider { display: none; } }
 @media (max-width: 900px) { .editor-layout { grid-template-columns: minmax(0, 1fr); } .editor-layout > .inspector { display: none; position: absolute; right: 0; top: 0; bottom: 0; width: 280px; z-index: 20; box-shadow: -12px 6px 32px rgba(25, 35, 26, .12); } .editor-layout > .inspector.is-open { display: flex; } .inspector-toggle, .close-inspector { display: block; } .project-identity { display: none; } .task-bar { gap: 8px; padding-inline: 12px; } }
 @media (max-width: 650px) { .project-bar h1 { font-size: 18px; } .project-bar { padding-inline: 12px; gap: 8px; flex-wrap: wrap; height: auto; min-height: 68px; padding-block: 6px; } .project-bar > .divider { display: none; } .header-actions { margin-left: auto; } .app .save-state { max-width: 150px; font-size: 10px; } .tool-bar { padding: 6px 8px; gap: 4px; height: auto; } .tool-bar > .divider { display: none; } .tool-group { flex-wrap: wrap; width: 100%; } .app .tool-group button { flex: 1; padding-inline: 6px; } .context-bar { padding-inline: 12px; } .context-options { flex-wrap: wrap; } .stage-meta, .app .statusbar { padding-inline: 12px; } #cursorMeta, #draftMeta { display: none; } .task-bar { flex-wrap: wrap; height: auto; padding-block: 8px; gap: 4px; } .task-bar > .divider, .task-status { display: none; } .app .task-bar button { padding-inline: 8px; font-size: 12px; } .task-actions { margin-left: auto; gap: 0; } .app .task-actions .primary-button { min-width: 62px; } .save-error { flex-wrap: wrap; padding-inline: 12px; } }
