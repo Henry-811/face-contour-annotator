@@ -1,5 +1,4 @@
 ﻿import {
-  DENSIFY_SPACING,
   DEFAULT_SOFT_RADIUS,
   DRAFT_SAVE_DELAY_MS,
   DRAFT_STORAGE_KEY,
@@ -7,8 +6,6 @@
   IMAGE_ZOOM_STEP,
   LABEL_HIT_PADDING,
   LABELS,
-  LINE_HIT_RADIUS,
-  MAX_CONTROL_HANDLES,
   MAX_LEGACY_DRAFT_BYTES,
   MAX_ANNOTATION_FILE_BYTES,
   MAX_IMAGE_SET_ENTRIES,
@@ -17,23 +14,20 @@
   MIN_CLOSED_POINTS,
   MIN_IMAGE_ZOOM,
   MIN_OPEN_POINTS,
-  OPEN_ENDPOINT_SOFT_RADIUS_MULTIPLIER,
   POINT_RADIUS,
-  SOFT_DRAG_MAX_DISTANCE,
-  SOFT_DRAG_MIN_DISTANCE,
-  SOFT_DRAG_RADIUS_RATIO,
   SOFT_RADIUS_MAX,
   SOFT_RADIUS_MIN,
   SOFT_RADIUS_STEP,
-} from "./config.js?v=local-projects-1";
-import * as geometry from "./geometry.js";
-import * as storage from "./storage.js?v=local-projects-1";
+} from "./config.js?v=workspace-ux-1";
+import * as geometry from "./geometry.js?v=workspace-ux-1";
+import * as editing from "./contour-editing.js?v=workspace-ux-1";
+import * as storage from "./storage.js?v=workspace-ux-1";
 import {
   buildTaskSchema,
   getImageSize,
   normalizeImportedContours as normalizeImportedContourData,
   validateContoursForTaskSchema,
-} from "./exporter.js?v=local-projects-1";
+} from "./exporter.js?v=workspace-ux-1";
 import {
   createAnnotationProject,
   createImageId,
@@ -48,7 +42,7 @@ import {
   isImageStatus,
   releaseProjectImageAssets,
   touchProject,
-} from "./project.js?v=local-projects-1";
+} from "./project.js?v=workspace-ux-1";
 import {
   applyAnnotationImport,
   assertAnnotationImportHasMatches,
@@ -57,22 +51,22 @@ import {
   parseAnnotationFile,
   planAnnotationImport,
   stripSharedRootDirectory,
-} from "./annotation-transfer.js?v=local-projects-1";
-import { readImageSourcesFromZip } from "./zip-import.js?v=local-projects-1";
-import { buildProjectHash, parseAppRoute } from "./routes.js?v=local-projects-1";
+} from "./annotation-transfer.js?v=workspace-ux-1";
+import { readImageSourcesFromZip } from "./zip-import.js?v=workspace-ux-1";
+import { buildProjectHash, parseAppRoute } from "./routes.js?v=workspace-ux-1";
 import {
   applyCanvasScale,
   drawAnnotationCanvas,
   getFitCanvasScale,
   getDisplayContourEntries,
   hitContourLabel,
-} from "./renderer.js";
-import { buildDefaultFeatureContours } from "./templates.js";
+} from "./renderer.js?v=workspace-ux-1";
+import { buildDefaultFeatureContours } from "./templates.js?v=workspace-ux-1";
 import {
   FOLDER_PROJECT_PREFIX, FOLDER_IMAGE_KIND, FOLDER_QUEUE_PAGE_SIZE, MAX_FOLDER_IMAGE_PIXELS,
   supportsFolderWorkspace, ensureFolderPermission, openFolderWorkspace,
   listFolderBookmarks, rememberFolderWorkspace, forgetFolderBookmark, validateFolderImage,
-} from "./folder-workspace.js";
+} from "./folder-workspace.js?v=workspace-ux-1";
 const state = {
   view: "hub",
   hubProjects: [],
@@ -93,8 +87,15 @@ const state = {
   activeLabel: "face_outline",
   mode: "draw",
   drawClosed: true,
-  softDrag: true,
-  showPoints: false,
+  softDrag: false,
+  showPoints: true,
+  editTool: "points",
+  selectedPoint: null,
+  redraw: null,
+  deletePreview: null,
+  addPointArmed: false,
+  addPointCandidate: null,
+  saveError: "",
   softRadius: DEFAULT_SOFT_RADIUS,
   scale: 1,
   fitScale: 1,
@@ -172,12 +173,36 @@ const elements = {
   cursorMeta: document.getElementById("cursorMeta"),
   draftMeta: document.getElementById("draftMeta"),
   statusText: document.getElementById("statusText"),
-  labelGrid: document.getElementById("labelGrid"),
+  newContourLabel: document.getElementById("newContourLabel"),
+  selectedContourLabel: document.getElementById("selectedContourLabel"),
+  selectedProperties: document.getElementById("selectedProperties"),
+  selectedContourMeta: document.getElementById("selectedContourMeta"),
+  selectionCaption: document.getElementById("selectionCaption"),
+  pointActions: document.getElementById("pointActions"),
+  addPointButton: document.getElementById("addPointButton"),
+  deletePreviewActions: document.getElementById("deletePreviewActions"),
+  applyDeleteButton: document.getElementById("applyDeleteButton"),
+  cancelDeleteButton: document.getElementById("cancelDeleteButton"),
+  saveErrorBanner: document.getElementById("saveErrorBanner"),
+  saveErrorReason: document.getElementById("saveErrorReason"),
+  retrySaveButton: document.getElementById("retrySaveButton"),
+  backupAnnotationsButton: document.getElementById("backupAnnotationsButton"),
+  fileMenu: document.getElementById("fileMenu"),
+  contourInspector: document.getElementById("contourInspector"),
+  inspectorToggle: document.getElementById("inspectorToggle"),
+  closeInspector: document.getElementById("closeInspector"),
+  currentImageStatus: document.getElementById("currentImageStatus"),
   softDragToggle: document.getElementById("softDragToggle"),
   showPointsToggle: document.getElementById("showPointsToggle"),
   softRadiusInput: document.getElementById("softRadiusInput"),
   softRadiusValue: document.getElementById("softRadiusValue"),
-  densifyButton: document.getElementById("densifyButton"),
+  editToolButtons: [...document.querySelectorAll("[data-edit-tool]")],
+  editToolHint: document.getElementById("editToolHint"),
+  deletePointButton: document.getElementById("deletePointButton"),
+  redrawActions: document.getElementById("redrawActions"),
+  applyRedrawButton: document.getElementById("applyRedrawButton"),
+  cancelRedrawButton: document.getElementById("cancelRedrawButton"),
+  alternateRedrawButton: document.getElementById("alternateRedrawButton"),
   shapeHint: document.getElementById("shapeHint"),
   shapeModeButtons: Array.from(document.querySelectorAll(".shape-mode-button")),
   contourList: document.getElementById("contourList"),
@@ -627,6 +652,7 @@ function getCurrentProjectImageRecord() {
 
 function buildProjectPreferences() {
   return {
+    editorVersion: 2,
     activeLabel: state.activeLabel,
     mode: state.mode,
     drawClosed: state.drawClosed,
@@ -646,9 +672,9 @@ function applyProjectPreferences(preferences = {}) {
       ? normalizeClosedForLabel(state.activeLabel, preferences.drawClosed)
       : getDefaultClosed(state.activeLabel);
   state.mode = preferences.mode === "refine" || preferences.mode === "edit" ? "refine" : state.mode;
-  state.softDrag = typeof preferences.softDrag === "boolean" ? preferences.softDrag : state.softDrag;
+  state.softDrag = preferences.editorVersion === 2 && preferences.softDrag === true;
   state.showPoints =
-    typeof preferences.showPoints === "boolean" ? preferences.showPoints : state.showPoints;
+    preferences.editorVersion !== 2 || preferences.showPoints !== false;
   state.softRadius = finiteNumber(preferences.softRadius, state.softRadius);
   state.imageZoom =
     typeof preferences.imageZoom === "number"
@@ -686,6 +712,9 @@ function renderProjectSaveState() {
     if (state.projectSaveStatus === "failed" || state.draftSaveBlocked) {
       message = state.folderWorkspace ? "Folder save failed — retry or download current JSON" : "Local save failed — export annotations now";
       indicatorState = "failed";
+    } else if (state.redraw || state.deletePreview) {
+      message = "Preview — Apply to save";
+      indicatorState = "saving";
     } else if (state.interaction && state.interaction.type !== "pan") {
       message = "Editing — release to save";
       indicatorState = "saving";
@@ -700,12 +729,14 @@ function renderProjectSaveState() {
       message = state.folderWorkspace ? "Saved to output folder" : "Saved locally";
       indicatorState = "saved";
     }
-    if (!state.folderWorkspace && state.storagePersisted === false) {
+    if (!state.folderWorkspace && state.storagePersisted === false && indicatorState === "saved") {
       message += " · browser may clear it";
     }
   }
   elements.projectSaveState.textContent = message;
   elements.projectSaveState.dataset.state = indicatorState;
+  elements.saveErrorBanner.hidden = indicatorState !== "failed";
+  elements.saveErrorReason.textContent = state.saveError || message;
   if (elements.saveNowButton) elements.saveNowButton.textContent = indicatorState === "failed" ? "Retry save" : "Save now";
 }
 
@@ -783,6 +814,7 @@ function queueProjectSave() {
     .catch((error) => {
       if (snapshot.generation === state.projectGeneration) {
         state.draftSaveBlocked = true;
+        state.saveError = error.message || "Save failed. Download a backup before closing this page.";
         setProjectSaveStatus("failed");
         console.error("Image-set snapshot could not be saved.", error);
         setStatus(
@@ -805,6 +837,11 @@ function queueProjectSave() {
 }
 
 async function flushProjectSaves() {
+  if (!confirmDiscardRedraw()) {
+    const error = new Error("Apply or cancel the redraw before leaving this image.");
+    error.code = "REDRAW_PENDING";
+    throw error;
+  }
   if (state.draftSaveTimer) {
     window.clearTimeout(state.draftSaveTimer);
     state.draftSaveTimer = null;
@@ -831,6 +868,7 @@ async function persistProjectNow() {
 }
 
 function resetProjectSaveTracking() {
+  state.saveError = "";
   state.projectDirtyRevision = 0;
   state.projectSavedRevision = 0;
   state.projectSaveInFlight = 0;
@@ -862,8 +900,13 @@ function clearWorkspaceState() {
   state.activeLabel = "face_outline";
   state.mode = "draw";
   state.drawClosed = true;
-  state.softDrag = true;
-  state.showPoints = false;
+  state.softDrag = false;
+  state.showPoints = true;
+  state.editTool = "points";
+  state.selectedPoint = null;
+  state.redraw = null;
+  state.deletePreview = null;
+  resetPointInsertion();
   state.softRadius = DEFAULT_SOFT_RADIUS;
   state.scale = 1;
   state.fitScale = 1;
@@ -924,6 +967,8 @@ function snapshotContours() {
 }
 
 function restoreContours(snapshot) {
+  resetPointInsertion();
+  state.selectedPoint = null;
   state.contours = JSON.parse(snapshot);
   if (!state.contours.some((contour) => contour.id === state.selectedId)) {
     state.selectedId = state.contours[0]?.id || null;
@@ -946,6 +991,7 @@ function commitChange(previousSnapshot) {
 }
 
 function undo() {
+  if (state.projectOperationBusy || state.interaction || !confirmDiscardRedraw()) return;
   if (!state.undoStack.length) {
     return;
   }
@@ -957,6 +1003,7 @@ function undo() {
 }
 
 function redo() {
+  if (state.projectOperationBusy || state.interaction || !confirmDiscardRedraw()) return;
   if (!state.redoStack.length) {
     return;
   }
@@ -967,45 +1014,29 @@ function redo() {
   setStatus("Redone.");
 }
 
-function clampPoint(point) {
-  return geometry.clampPointToImage(point, getCurrentImageSize());
-}
-
 function normalizePoint(point) {
   return geometry.normalizePointToImage(point, getCurrentImageSize());
 }
 
 function toCanvasPoint(event) {
   const rect = elements.canvas.getBoundingClientRect();
-  return clampPoint({
-    x: (event.clientX - rect.left) / state.scale,
-    y: (event.clientY - rect.top) / state.scale,
-  });
+  return {
+    x: Math.max(0, Math.min(state.image.naturalWidth, (event.clientX - rect.left) / state.scale)),
+    y: Math.max(0, Math.min(state.image.naturalHeight, (event.clientY - rect.top) / state.scale)),
+  };
 }
 
 function distance(a, b) {
   return geometry.distance(a, b);
 }
 
-function densifyPoints(points, closed, spacing = DENSIFY_SPACING) {
-  return geometry.densifyPoints(points, closed, {
-    spacing,
-    imageSize: getCurrentImageSize(),
-  });
-}
-
-function hitFilledContour(point) {
-  return geometry.hitFilledContour(state.contours, point);
-}
-
 function hitTest(point) {
-  return geometry.hitTestContours({
+  return editing.hitContours({
     contours: state.contours,
     point,
-    showPoints: state.showPoints,
-    scale: state.scale,
-    hitRadius: HIT_RADIUS,
-    lineHitRadius: LINE_HIT_RADIUS,
+    selectedId: state.selectedId,
+    vertices: state.editTool === "points" && state.showPoints,
+    tolerance: HIT_RADIUS / state.scale,
   });
 }
 
@@ -1023,7 +1054,7 @@ function hitLabel(point) {
       scale: state.scale,
       canvasWidth: elements.canvas.clientWidth,
       canvasHeight: elements.canvas.clientHeight,
-    }),
+    }).filter((entry) => entry.isSelected),
     displayPoint,
     LABEL_HIT_PADDING,
   );
@@ -1050,6 +1081,7 @@ function syncSidebarHierarchy() {
 function syncModeControls() {
   document.querySelectorAll(".mode-button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.mode === state.mode);
+    button.setAttribute("aria-pressed", String(button.dataset.mode === state.mode));
     button.disabled = state.projectOperationBusy;
   });
   elements.canvas.style.cursor = state.projectOperationBusy
@@ -1081,38 +1113,46 @@ function setDrawClosed(closed) {
 }
 
 function setMode(mode) {
-  if (state.projectOperationBusy) return;
+  if (state.projectOperationBusy || state.interaction || !confirmDiscardRedraw()) return;
   if (mode === "edit") {
     mode = "refine";
   }
   if (mode !== "draw" && mode !== "refine") {
     return;
   }
+  resetPointInsertion();
   state.mode = mode;
   updateCommandState();
   scheduleDraftSave();
   setStatus(
     mode === "draw"
       ? "Draw mode."
-      : "Refine mode: drag labels or closed regions to move, drag contour lines to reshape.",
+      : "Edit points: drag an existing point; double-click the line to add a point.",
   );
   drawCanvas();
 }
 
 function selectContour(id) {
-  if (state.projectOperationBusy) return;
+  if (state.projectOperationBusy || state.interaction) return;
+  if (!confirmDiscardRedraw()) return;
+  resetPointInsertion();
+  state.selectedPoint = null;
   state.selectedId = id;
+  if (!state.draftPoints.length) state.mode = "refine";
   scheduleDraftSave();
   renderAll();
 }
 
 function deleteSelected() {
+  if (state.projectOperationBusy || state.interaction || !confirmDiscardRedraw()) return;
   if (!state.selectedId) {
     setStatus("No contour selected.", true);
     return;
   }
   const previous = snapshotContours();
   state.contours = state.contours.filter((contour) => contour.id !== state.selectedId);
+  state.selectedPoint = null;
+  resetPointInsertion();
   state.selectedId = state.contours[0]?.id || null;
   commitChange(previous);
   renderAll();
@@ -1120,12 +1160,16 @@ function deleteSelected() {
 }
 
 function clearContours() {
+  if (state.projectOperationBusy || state.interaction || !confirmDiscardRedraw()) return;
   if (!state.contours.length) {
     return;
   }
+  if (!window.confirm("Clear all contours on this image? You can undo this action.")) return;
   const previous = snapshotContours();
   state.contours = [];
   state.selectedId = null;
+  state.selectedPoint = null;
+  resetPointInsertion();
   commitChange(previous);
   renderAll();
   setStatus("All contours cleared.");
@@ -1147,7 +1191,7 @@ function finishDraft(closed = getDefaultClosed()) {
     id: createId(),
     label: state.activeLabel,
     closed,
-    points: densifyPoints(points, closed),
+    points,
   };
   state.contours.push(contour);
   state.selectedId = contour.id;
@@ -1173,20 +1217,76 @@ function cancelDraft() {
   setStatus("Draft contour canceled.");
 }
 
-function densifySelectedContour() {
+function deleteSelectedPoint() {
+  if (state.projectOperationBusy || state.interaction || state.redraw || state.deletePreview || state.mode !== "refine" || state.editTool !== "points") return;
   const contour = state.contours.find((candidate) => candidate.id === state.selectedId);
-  if (!contour) {
-    setStatus("Select a contour before adding curve points.", true);
+  if (!contour || state.selectedPoint?.contourId !== contour.id) return;
+  const result = editing.planPointDeletion({ contour, pointIndex: state.selectedPoint.index });
+  if (!result) { setStatus(`Keep at least ${contour.closed ? 3 : 2} points on this contour.`, true); return; }
+  const errors = validateContoursForTaskSchema({ contours: [result.contour], labels: LABELS, imageSize: getCurrentImageSize() });
+  if (errors.length) { setStatus(`Cannot remove this point: ${errors[0]}`, true); return; }
+  resetPointInsertion();
+  if (!result.exact) {
+    state.deletePreview = result.contour;
+    renderAll();
+    setStatus("Delete preview: green shows the fitted curve. Apply deletion or Cancel; nothing has been changed yet.");
     return;
   }
   const previous = snapshotContours();
-  contour.points = densifyPoints(contour.points, Boolean(contour.closed));
+  replaceContour(result.contour);
+  state.selectedPoint = null;
   commitChange(previous);
   renderAll();
-  setStatus("Curve points added.");
+  setStatus("Point deleted; the original curve was restored.");
+}
+
+function applyPointDeletion() {
+  if (state.projectOperationBusy || !state.deletePreview) return;
+  const previous = snapshotContours();
+  replaceContour(state.deletePreview);
+  state.deletePreview = null;
+  state.selectedPoint = null;
+  commitChange(previous);
+  renderAll();
+  setStatus("Point deleted. Undo restores the previous curve.");
+}
+
+function cancelPointDeletion() {
+  state.deletePreview = null;
+  renderAll();
+  setStatus("Deletion canceled. The contour is unchanged.");
+}
+
+function resetPointInsertion() {
+  state.addPointArmed = false;
+  state.addPointCandidate = null;
+}
+
+function insertPointAt(point) {
+  if (state.projectOperationBusy || state.interaction || state.redraw || state.deletePreview || state.mode !== "refine" || state.editTool !== "points") return;
+  const contour = state.contours.find((candidate) => candidate.id === state.selectedId);
+  if (!contour) return;
+  const hit = editing.hitContours({ contours: [contour], selectedId: contour.id, point, tolerance: HIT_RADIUS / state.scale });
+  if (hit?.type !== "edge") return;
+  try {
+    const result = editing.insertCurvePoint({ contour, segmentIndex: hit.segmentIndex, segmentT: hit.segmentT, imageSize: getCurrentImageSize() });
+    if (result.contour.points.length === contour.points.length) return;
+    const errors = validateContoursForTaskSchema({ contours: [result.contour], labels: LABELS, imageSize: getCurrentImageSize() });
+    if (errors.length) throw new Error(errors[0]);
+    const previous = snapshotContours();
+    replaceContour(result.contour);
+    state.selectedPoint = { contourId: contour.id, index: result.pointIndex };
+    resetPointInsertion();
+    commitChange(previous);
+    renderAll();
+    setStatus("Point added without changing the curve.");
+  } catch (error) {
+    setStatus(error.message || "Could not add a point here.", true);
+  }
 }
 
 function initializeFeatureTemplate() {
+  if (state.projectOperationBusy || state.interaction || !confirmDiscardRedraw()) return;
   if (!state.image) {
     setStatus("Open an image before initializing feature contours.", true);
     return;
@@ -1215,6 +1315,10 @@ function initializeFeatureTemplate() {
   const previous = snapshotContours();
   state.contours = [...state.contours, ...templateContours];
   state.selectedId = templateContours[0].id;
+  state.mode = "refine";
+  state.editTool = "points";
+  state.selectedPoint = null;
+  resetPointInsertion();
   state.draftPoints = [];
   state.hoverPoint = null;
   commitChange(previous);
@@ -1266,8 +1370,9 @@ function normalizeContoursForImage(contours, imageSize) {
 function updateCommandState() {
   syncSidebarHierarchy();
   syncModeControls();
-  const busy = state.projectOperationBusy;
-  elements.labelGrid.querySelectorAll("button").forEach((button) => { button.disabled = busy; });
+  const busy = state.projectOperationBusy || Boolean(state.redraw || state.deletePreview) || Boolean(state.interaction && state.interaction.type !== "pan");
+  elements.newContourLabel.disabled = busy;
+  elements.selectedContourLabel.disabled = busy;
   elements.contourList.querySelectorAll("button, select").forEach((control) => { control.disabled = busy; });
   elements.contourList.inert = busy;
   elements.undoButton.disabled = busy || state.undoStack.length === 0;
@@ -1280,8 +1385,10 @@ function updateCommandState() {
   elements.openZipButton.disabled = busy;
   elements.openDirectoryButton.disabled = busy || !supportsFolderWorkspace();
   elements.chooseOutputButton.disabled = busy || !state.pendingSourceHandle;
-  elements.saveNowButton.hidden = !state.folderWorkspace;
+  elements.saveNowButton.hidden = !state.project;
   elements.saveNowButton.disabled = busy || !state.image;
+  elements.retrySaveButton.disabled = busy || !state.image;
+  elements.backupAnnotationsButton.disabled = busy || !state.project;
   elements.folderOutputLocation.hidden = !state.folderWorkspace;
   elements.folderOutputLocation.textContent = state.folderWorkspace ? `Output: ${state.folderWorkspace.outputHandle.name} / annotations` : "";
   elements.exportAnnotationsButton.textContent = state.folderWorkspace ? "Download current JSON" : "Export JSON";
@@ -1292,7 +1399,7 @@ function updateCommandState() {
   elements.projectList.querySelectorAll("button").forEach((button) => {
     button.disabled = busy;
   });
-  elements.exitProjectButton.disabled = busy || !state.project;
+  elements.exitProjectButton.disabled = state.projectOperationBusy || !state.project;
   elements.exportAnnotationsButton.disabled = !state.project || busy;
   elements.importAnnotationsButton.disabled = !state.image || busy;
   elements.finishDraftButton.disabled =
@@ -1301,7 +1408,34 @@ function updateCommandState() {
     !isShapeAllowed(state.activeLabel, state.drawClosed);
   elements.finishDraftButton.textContent = state.drawClosed ? "Finish Region" : "Finish Line";
   elements.cancelDraftButton.disabled = busy || state.draftPoints.length === 0;
-  elements.densifyButton.disabled = busy || !state.selectedId;
+  elements.editToolButtons.forEach((button) => {
+    button.disabled = busy || !state.image;
+    const active = state.mode === "refine" && button.dataset.editTool === state.editTool;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  elements.addPointButton.disabled = busy || !state.selectedId;
+  elements.addPointButton.setAttribute("aria-pressed", String(state.addPointArmed));
+  elements.addPointButton.textContent = state.addPointArmed ? "Cancel add point" : "+ Add point";
+  elements.pointActions.hidden = state.editTool !== "points" || Boolean(state.deletePreview);
+  elements.deletePreviewActions.hidden = !state.deletePreview;
+  elements.applyDeleteButton.disabled = state.projectOperationBusy;
+  elements.cancelDeleteButton.disabled = state.projectOperationBusy;
+  elements.deletePointButton.disabled = busy || state.editTool !== "points" || state.selectedPoint?.contourId !== state.selectedId;
+  elements.redrawActions.hidden = !state.redraw;
+  elements.applyRedrawButton.disabled = state.projectOperationBusy || !state.redraw?.preview;
+  elements.cancelRedrawButton.disabled = state.projectOperationBusy;
+  elements.alternateRedrawButton.hidden = !state.redraw?.preview || !state.contours.find((c) => c.id === state.selectedId)?.closed;
+  elements.alternateRedrawButton.disabled = state.projectOperationBusy;
+  elements.editToolHint.textContent = state.editTool === "points"
+    ? state.deletePreview ? "Green = fitted curve. Apply or Cancel."
+      : state.addPointArmed ? "Click the selected line to add one point · Esc cancels"
+        : "Double-click line to add · Drag point to move"
+    : state.editTool === "transform"
+      ? "Drag to move. Square handles resize; Shift keeps proportions. The round handle rotates."
+      : state.redraw?.preview ? "Dashed red = removed arc. Green = replacement. Apply to save, or choose the other arc."
+        : state.redraw ? "Click the replacement path, then click the same contour to finish. Esc cancels."
+          : "Select a contour, then click its line to start redrawing a section.";
   elements.shapeHint.textContent = `${getLabel(state.activeLabel).name}: ${getDrawShapeName()} mode. ${
     state.drawClosed
       ? "Enter finishes a region; clicking the first point closes it."
@@ -1317,107 +1451,65 @@ function updateCommandState() {
 }
 
 function renderLabels() {
-  elements.labelGrid.innerHTML = "";
-  LABELS.forEach((label) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "label-button";
-    button.classList.toggle("is-active", label.id === state.activeLabel);
-    button.dataset.label = label.id;
-    button.disabled = state.projectOperationBusy;
-    button.innerHTML = `<span class="swatch" style="background:${label.color}"></span><span>${label.name}</span>`;
-    button.addEventListener("click", () => {
-      if (state.projectOperationBusy) return;
-      const nextClosed = normalizeClosedForLabel(label.id);
-      if (state.draftPoints.length && nextClosed !== state.drawClosed) {
-        setStatus(`Finish or cancel the current ${getDrawShapeName()} before switching to ${label.name}.`, true);
-        return;
-      }
-      state.activeLabel = label.id;
-      if (!state.draftPoints.length) {
-        state.drawClosed = nextClosed;
-      }
-      renderLabels();
-      updateCommandState();
-      scheduleDraftSave();
-      setStatus(`Active label: ${label.name}.`);
+  for (const select of [elements.newContourLabel, elements.selectedContourLabel]) {
+    if (select.options.length) continue;
+    LABELS.forEach((label) => {
+      const option = document.createElement("option");
+      option.value = label.id;
+      option.textContent = label.name;
+      select.appendChild(option);
     });
-    elements.labelGrid.appendChild(button);
-  });
+  }
+  elements.newContourLabel.value = state.activeLabel;
 }
 
 function renderContourList() {
-  elements.contourCount.textContent = `${state.contours.length} ${
-    state.contours.length === 1 ? "contour" : "contours"
-  }`;
-  elements.contourList.innerHTML = "";
+  elements.contourCount.textContent = String(state.contours.length);
+  const focusedId = elements.contourList.contains(document.activeElement) ? document.activeElement.dataset.contourId : null;
+  elements.contourList.replaceChildren();
   if (!state.contours.length) {
     const empty = document.createElement("div");
     empty.className = "empty-list";
-    empty.textContent = "No contours";
+    empty.textContent = "No contours. Initialize or draw a new contour.";
     elements.contourList.appendChild(empty);
-    return;
   }
-  state.contours.forEach((contour, index) => {
+  state.contours.forEach((contour) => {
     const label = getLabel(contour.label);
-    const bounds = geometry.getContourBounds(contour);
-    const item = document.createElement("article");
+    const item = document.createElement("button");
+    item.type = "button";
     item.className = "contour-item";
+    item.dataset.contourId = contour.id;
     item.classList.toggle("is-selected", contour.id === state.selectedId);
-    item.innerHTML = `
-      <div class="contour-item-top">
-        <span class="swatch" style="background:${label.color}"></span>
-        <span class="contour-index">${String(index + 1).padStart(2, "0")}</span>
-        <select aria-label="Contour label"></select>
-        <button class="small-button danger" type="button" title="Delete contour">x</button>
-      </div>
-      <div class="contour-meta">
-        <span>${contour.points.length} points</span>
-        <span>${contour.closed ? "closed" : "open"}</span>
-        <span>${Math.round(bounds.right - bounds.left)} x ${Math.round(bounds.bottom - bounds.top)}</span>
-      </div>
-    `;
+    item.setAttribute("aria-pressed", String(contour.id === state.selectedId));
+    item.setAttribute("aria-label", `${label.name}, ${contour.points.length} points`);
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    swatch.style.background = label.color;
+    const name = document.createElement("span");
+    name.textContent = label.name;
+    const count = document.createElement("span");
+    count.className = "point-count";
+    count.textContent = String(contour.points.length);
+    item.append(swatch, name, count);
     item.addEventListener("click", () => selectContour(contour.id));
-
-    const select = item.querySelector("select");
-    LABELS.forEach((labelOption) => {
-      const option = document.createElement("option");
-      option.value = labelOption.id;
-      option.textContent = labelOption.name;
-      option.selected = labelOption.id === contour.label;
-      select.appendChild(option);
-    });
-    select.addEventListener("change", (event) => {
-      if (state.projectOperationBusy) { event.target.value = contour.label; return; }
-      const nextLabelId = event.target.value;
-      if (!isShapeAllowed(nextLabelId, contour.closed)) {
-        event.target.value = contour.label;
-        setStatus(
-          `${getLabel(nextLabelId).name} does not allow ${getShapeType(contour.closed)}.`,
-          true,
-        );
-        return;
-      }
-      const previous = snapshotContours();
-      contour.label = event.target.value;
-      state.activeLabel = contour.label;
-      state.drawClosed = normalizeClosedForLabel(contour.label, Boolean(contour.closed));
-      commitChange(previous);
-      renderAll();
-    });
-
-    item.querySelector(".small-button").addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (state.projectOperationBusy) return;
-      const previous = snapshotContours();
-      state.contours = state.contours.filter((candidate) => candidate.id !== contour.id);
-      state.selectedId = state.contours[0]?.id || null;
-      commitChange(previous);
-      renderAll();
-    });
-
     elements.contourList.appendChild(item);
+    if (contour.id === focusedId) item.focus({ preventScroll: true });
   });
+  const selected = state.contours.find((contour) => contour.id === state.selectedId);
+  elements.selectedProperties.hidden = !selected;
+  elements.selectionCaption.replaceChildren();
+  if (selected) {
+    elements.selectedContourLabel.value = selected.label;
+    elements.selectedContourMeta.textContent = `${selected.closed ? "Closed curve" : "Open curve"} · ${selected.points.length} points`;
+    const dot = document.createElement("span");
+    dot.className = "swatch";
+    dot.style.background = getLabel(selected.label).color;
+    const name = document.createElement("strong");
+    name.textContent = getLabel(selected.label).name;
+    elements.selectionCaption.append(dot, "Editing ", name);
+  } else {
+    elements.selectionCaption.textContent = "Select a contour";
+  }
 }
 
 function getStatusLabel(status) {
@@ -1434,6 +1526,8 @@ function renderProjectPanel() {
     : "0 / 0";
   elements.imageQueueSummary.textContent = `${images.length} ${images.length === 1 ? "image" : "images"}`;
   elements.projectName.textContent = project?.name || "No image set";
+  elements.projectName.title = project?.name || "";
+  elements.currentImageStatus.textContent = getStatusLabel(getCurrentProjectImageRecord()?.status);
   elements.projectProgress.textContent = `${progress.done} done, ${progress.in_progress} active`;
   renderProjectSaveState();
   elements.previousImageButton.disabled =
@@ -1441,9 +1535,10 @@ function renderProjectPanel() {
   elements.nextImageButton.disabled =
     state.projectOperationBusy || !getAdjacentImageId(project, 1);
   const hasImage = Boolean(state.image);
-  elements.markDoneButton.disabled = state.projectOperationBusy || !hasImage;
-  elements.skipImageButton.disabled = state.projectOperationBusy || !hasImage;
-  elements.needsReviewButton.disabled = state.projectOperationBusy || !hasImage;
+  const statusLocked = state.projectOperationBusy || Boolean(state.redraw || state.deletePreview) || Boolean(state.interaction) || !hasImage;
+  elements.markDoneButton.disabled = statusLocked;
+  elements.skipImageButton.disabled = statusLocked;
+  elements.needsReviewButton.disabled = statusLocked;
   elements.imageQueueList.innerHTML = "";
   if (!images.length) {
     elements.queuePagination.hidden = true;
@@ -1476,7 +1571,13 @@ function renderProjectPanel() {
     badge.textContent = getStatusLabel(image.status);
     button.append(name, badge);
     button.addEventListener("click", () => {
-      switchToProjectImage(image.id);
+      const returnToQueue = elements.imageQueueDisclosure.open;
+      switchToProjectImage(image.id).then(() => {
+        if (state.currentImageId === image.id) {
+          closeWorkspaceMenu(elements.imageQueueDisclosure);
+          if (returnToQueue) elements.imageQueueDisclosure.querySelector("summary").focus({ preventScroll: true });
+        }
+      }).catch((error) => { console.error("Image navigation failed.", error); setStatus(error.message, true); });
     });
     elements.imageQueueList.appendChild(button);
   });
@@ -1495,9 +1596,17 @@ function drawCanvasNow() {
     hoverPoint: state.hoverPoint,
     activeLabel: state.activeLabel,
     labels: LABELS,
-    showPoints: state.showPoints,
+    showPoints: state.showPoints && state.mode === "refine" && state.editTool === "points",
     pointRadius: POINT_RADIUS,
-    maxControlHandles: MAX_CONTROL_HANDLES,
+    editor: state.mode === "refine" ? {
+      tool: state.editTool,
+      selectedPointIndex: state.selectedPoint?.contourId === state.selectedId ? state.selectedPoint.index : null,
+      redraw: state.redraw, hoverPoint: state.hoverPoint,
+      deletePreview: state.deletePreview,
+      addPointCandidate: state.addPointCandidate,
+      softPoint: state.editTool === "points" && state.softDrag ? state.hoverPoint : null,
+      softRadius: state.softRadius / state.scale,
+    } : {},
   });
 }
 
@@ -1575,6 +1684,7 @@ function renderTopbar() {
   const imageRecord = getCurrentProjectImageRecord();
   elements.emptyState.classList.toggle("hidden", hasImage);
   elements.fileMeta.textContent = hasImage ? imageRecord?.path || state.fileName : "No image loaded";
+  elements.fileMeta.title = elements.fileMeta.textContent;
   elements.imageSize.textContent = hasImage
     ? `${state.image.naturalWidth} x ${state.image.naturalHeight}`
     : "0 x 0";
@@ -1672,6 +1782,11 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
       state.imagePersisted = Boolean(options.imageStored);
       state.fileName = fileName || "image";
       state.contours = nextContours;
+      state.redraw = null;
+      state.deletePreview = null;
+      resetPointInsertion();
+      state.selectedPoint = null;
+      state.editTool = "points";
       state.selectedId = state.contours.some((contour) => contour.id === options.selectedId)
         ? options.selectedId
         : state.contours[0]?.id || null;
@@ -1690,8 +1805,8 @@ function loadImageDataUrl(dataUrl, fileName, options = {}) {
           ? normalizeClosedForLabel(state.activeLabel, options.drawClosed)
           : getDefaultClosed(state.activeLabel);
       state.mode = options.mode === "refine" || options.mode === "edit" ? "refine" : "draw";
-      state.softDrag = typeof options.softDrag === "boolean" ? options.softDrag : true;
-      state.showPoints = typeof options.showPoints === "boolean" ? options.showPoints : false;
+      state.softDrag = typeof options.softDrag === "boolean" ? options.softDrag : false;
+      state.showPoints = typeof options.showPoints === "boolean" ? options.showPoints : true;
       state.softRadius = finiteNumber(options.softRadius, state.softRadius);
       state.imageZoom =
         typeof options.imageZoom === "number" ? clampImageZoom(options.imageZoom) : 1;
@@ -1993,6 +2108,7 @@ async function reconnectFolderProject(bookmark) {
 
 async function retryCurrentSave() {
   if (!state.project || state.projectOperationBusy) return;
+  if (!confirmDiscardRedraw()) return;
   setProjectOperationBusy(true);
   try {
     if (state.folderWorkspace) {
@@ -2003,9 +2119,10 @@ async function retryCurrentSave() {
     state.draftSaveBlocked = false;
     markProjectDirty();
     await flushProjectSaves();
-    setStatus("Latest changes saved to the output folder.");
+    setStatus(state.folderWorkspace ? "Latest changes saved to the output folder." : "Latest changes saved locally.");
   } catch (error) {
     state.draftSaveBlocked = true;
+    state.saveError = error.message || "Save failed. Download a backup before closing this page.";
     setProjectSaveStatus("failed");
     console.error("Save retry failed.", error);
     setStatus(error.message || "Save failed. Download current JSON before leaving.", true);
@@ -2260,9 +2377,10 @@ function validateImageForDone(imageRecord = getCurrentProjectImageRecord()) {
 }
 
 async function setCurrentImageStatus(status) {
-  if (state.projectOperationBusy) {
+  if (state.projectOperationBusy || state.interaction) {
     return;
   }
+  if (state.redraw || state.deletePreview) { setStatus("Apply or cancel the preview before changing this image's status.", true); return; }
   syncCurrentProjectImage();
   const imageRecord = getCurrentProjectImageRecord();
   if (!imageRecord) {
@@ -2390,6 +2508,7 @@ async function leaveCurrentProject({ updateHistory = true } = {}) {
       await flushProjectSaves();
     } catch (error) {
       console.error("Local saves could not be flushed before exit.", error);
+      if (error.code === "REDRAW_PENDING") { setStatus(error.message, true); return false; }
       // A failed earlier snapshot may have later writes already queued. Keep
       // the workspace lease until those writes (and their cleanup) settle.
       await state.projectWriteTail;
@@ -2632,17 +2751,6 @@ async function migrateLegacySingleImageDraft() {
   return { migrated: true, localProjectKey: LEGACY_DRAFT_PROJECT_KEY };
 }
 
-function clampMoveDelta(contours, dx, dy) {
-  if (!state.image || !contours.length) {
-    return { dx, dy };
-  }
-  return geometry.clampMoveDelta(contours, dx, dy, getCurrentImageSize());
-}
-
-function moveContourPoints(points, dx, dy) {
-  return geometry.moveContourPoints(points, dx, dy, getCurrentImageSize());
-}
-
 function startStagePan(event, captureTarget) {
   if (!state.image || state.interaction || !isStageScrollable()) {
     return false;
@@ -2717,80 +2825,127 @@ function handleDrawPointerDown(point) {
   setStatus("Point added.");
 }
 
-function applySoftMove(interaction, point) {
-  const result = geometry.applySoftMoveToContours({
-    contours: interaction.startContours,
-    contourId: interaction.contourId,
-    interaction,
-    point,
-    softRadius: state.softRadius,
-    imageSize: getCurrentImageSize(),
-    softDragConfig: {
-      minDistance: SOFT_DRAG_MIN_DISTANCE,
-      maxDistance: SOFT_DRAG_MAX_DISTANCE,
-      radiusRatio: SOFT_DRAG_RADIUS_RATIO,
-      endpointRadiusMultiplier: OPEN_ENDPOINT_SOFT_RADIUS_MULTIPLIER,
-    },
-  });
-  interaction.wasClamped = result.wasClamped;
-  state.contours = result.contours;
+function replaceContour(contour) {
+  state.contours = state.contours.map((c) => c.id === contour.id ? contour : c);
+}
+
+function confirmDiscardRedraw() {
+  if (state.deletePreview) {
+    if (!window.confirm("Discard this unapplied point deletion? Saved contours will stay unchanged.")) return false;
+    cancelPointDeletion();
+  }
+  if (!state.redraw) return true;
+  if (!window.confirm("Discard this unapplied redraw? Saved contours will stay unchanged.")) return false;
+  cancelRedraw();
+  return true;
+}
+
+function cancelRedraw() {
+  state.redraw = null;
+  state.hoverPoint = null;
+  renderAll();
+  setStatus("Redraw cancelled. The saved contour was not changed.");
+}
+
+function updateRedrawPreview() {
+  const draft = state.redraw;
+  const contour = state.contours.find((c) => c.id === draft.contourId);
+  try {
+    draft.preview = editing.redrawContour({ contour, ...draft });
+    const errors = validateContoursForTaskSchema({ contours: [draft.preview.contour], labels: LABELS, imageSize: getCurrentImageSize() });
+    if (errors.length) throw new Error(errors[0]);
+  } catch (error) {
+    draft.end = null;
+    draft.preview = null;
+    setStatus(error.message, true);
+  }
+  renderAll();
+}
+
+function applyRedraw() {
+  if (state.projectOperationBusy || !state.redraw?.preview) return;
+  const previous = snapshotContours();
+  replaceContour(state.redraw.preview.contour);
+  state.redraw = null;
+  state.selectedPoint = null;
+  commitChange(previous);
+  renderAll();
+  setStatus("Section replaced and queued for saving. Undo restores the original curve.");
+}
+
+function handleRedrawPoint(point) {
+  const contour = state.contours.find((c) => c.id === state.selectedId);
+  if (!contour) { setStatus("Select a contour first.", true); return; }
+  const hit = editing.nearestCurvePoint({ contour, point });
+  if (!state.redraw) {
+    if (!hit || hit.distance > HIT_RADIUS / state.scale) {
+      const other = hitTest(point);
+      if (other) selectContour(other.contour.id);
+      setStatus("Click the selected contour line to start."); return;
+    }
+    const segment = editing.curveSegments(contour)[hit.segmentIndex];
+    const startPoint = editing.splitSegment({ segment, t: hit.segmentT })[0].end;
+    if (!editing.isPointInsideImage({ point: startPoint, imageSize: getCurrentImageSize() })) {
+      setStatus("Start on a visible part of the curve inside the image.", true); return;
+    }
+    state.redraw = { contourId: contour.id, start: hit, startPoint, points: [], end: null, alternate: false, preview: null };
+    // Store only positional anchors, not hit-test contour references.
+    state.redraw.start = { segmentIndex: hit.segmentIndex, segmentT: hit.segmentT };
+  } else if (!state.redraw.preview) {
+    if (hit && hit.distance <= HIT_RADIUS / state.scale) {
+      state.redraw.end = { segmentIndex: hit.segmentIndex, segmentT: hit.segmentT };
+      updateRedrawPreview();
+    } else {
+      state.redraw.points.push(point);
+    }
+  }
+  renderAll();
 }
 
 function handleRefinePointerDown(point, event) {
-  const labelHit = hitLabel(point);
-  const hit = labelHit || (event?.shiftKey
-    ? hitFilledContour(point) || hitTest(point)
-    : hitTest(point));
+  if (state.deletePreview) return;
+  if (state.addPointArmed) { insertPointAt(point); return; }
+  if (state.editTool === "redraw") { handleRedrawPoint(point); return; }
+  const selected = state.contours.find((c) => c.id === state.selectedId);
+  const handle = state.editTool === "transform" && selected
+    ? editing.hitTransformHandle({ contour: selected, scale: state.scale, imageSize: getCurrentImageSize(), point }) : null;
+  const curveHit = hitTest(point);
+  const hit = handle ? { contour: selected, type: "transform" }
+    : curveHit?.type === "vertex" ? curveHit : hitLabel(point) || curveHit;
   if (!hit) {
+    state.selectedPoint = null;
     state.selectedId = null;
-    if (!startStagePan(event, elements.canvas)) {
-      state.interaction = null;
-    }
-    renderAll();
-    return;
+    startStagePan(event, elements.canvas);
+    renderAll(); return;
   }
   const previousSnapshot = snapshotContours();
   state.selectedId = hit.contour.id;
-  if (hit.type === "label" || hit.type === "contour") {
-    state.interaction = {
-      type: "move",
-      previousSnapshot,
-      contourId: hit.contour.id,
-      startPoint: point,
-      startContours: cloneContours(),
-    };
-  } else if (hit.type === "vertex" && !state.softDrag) {
-    state.interaction = {
-      type: "vertex",
-      previousSnapshot,
-      contourId: hit.contour.id,
-      pointIndex: hit.pointIndex,
-    };
-  } else if (hit.type === "vertex" || hit.type === "edge") {
-    state.interaction = {
-      type: "soft",
-      previousSnapshot,
-      contourId: hit.contour.id,
-      pointIndex: hit.pointIndex,
-      segmentIndex: hit.segmentIndex,
-      segmentT: hit.segmentT || 0,
-      startPoint: point,
-      startContours: cloneContours(),
-    };
-  } else if (event?.shiftKey) {
-    state.interaction = {
-      type: "move",
-      previousSnapshot,
-      contourId: hit.contour.id,
-      startPoint: point,
-      startContours: cloneContours(),
-    };
-  } else {
-    state.interaction = null;
+  state.selectedPoint = null;
+  let original = editing.materializeContour(hit.contour);
+  const interaction = { type: "move", contourId: hit.contour.id, previousSnapshot, original, startPoint: point, pointerId: event.pointerId };
+  if (handle) {
+    interaction.type = "transform";
+    interaction.handle = handle;
+  } else if (state.editTool === "points" && hit.type === "vertex") {
+    let pointIndex = hit.pointIndex;
+    if (state.softDrag) {
+      const prepared = editing.prepareSoftEdit({ contour: original, pointIndex, radius: state.softRadius / state.scale, imageSize: getCurrentImageSize() });
+      original = prepared.contour; pointIndex = prepared.pointIndex;
+      interaction.fixedPointIndices = prepared.fixedPointIndices;
+    }
+    const errors = validateContoursForTaskSchema({ contours: [original], labels: LABELS, imageSize: getCurrentImageSize() });
+    if (errors.length) throw new Error(errors[0]);
+    interaction.original = original;
+    interaction.type = "point";
+    interaction.pointIndex = pointIndex;
+    interaction.radius = state.softDrag ? state.softRadius / state.scale : 0;
+    // Boundary preparation can shift indices, but a click has not applied it.
+    state.selectedPoint = { contourId: hit.contour.id, index: hit.pointIndex };
+  } else if (state.editTool === "points") {
     renderAll();
-    setStatus("Drag the label or closed region to move it. Drag the contour line to reshape.");
     return;
   }
+  state.interaction = interaction;
   renderAll();
 }
 
@@ -2804,12 +2959,21 @@ function handlePointerDown(event) {
   if (event.button !== 0) {
     return;
   }
+  elements.canvas.focus({ preventScroll: true });
   elements.canvas.setPointerCapture(event.pointerId);
   const point = toCanvasPoint(event);
   if (state.mode === "draw") {
     handleDrawPointerDown(point);
   } else {
-    handleRefinePointerDown(point, event);
+    try {
+      handleRefinePointerDown(point, event);
+    } catch (error) {
+      state.interaction = null;
+      state.selectedPoint = null;
+      if (elements.canvas.hasPointerCapture(event.pointerId)) elements.canvas.releasePointerCapture(event.pointerId);
+      renderAll();
+      setStatus(error.message || "This curve edit could not be applied.", true);
+    }
   }
 }
 
@@ -2823,6 +2987,16 @@ function handlePointerMove(event) {
   }
   const point = toCanvasPoint(event);
   elements.cursorMeta.textContent = `x ${Math.round(point.x)}, y ${Math.round(point.y)}`;
+  state.hoverPoint = point;
+  if (state.addPointArmed) {
+    const contour = state.contours.find((candidate) => candidate.id === state.selectedId);
+    const hit = contour && editing.hitContours({ contours: [contour], selectedId: contour.id, point, tolerance: HIT_RADIUS / state.scale });
+    state.addPointCandidate = hit?.type === "edge" ? hit.point : null;
+    elements.canvas.style.cursor = "crosshair";
+    drawCanvas();
+    return;
+  }
+  if (state.editTool === "redraw" && state.mode === "refine") { drawCanvas(); return; }
   if (state.mode === "draw") {
     state.hoverPoint = point;
     drawCanvas();
@@ -2831,51 +3005,51 @@ function handlePointerMove(event) {
 
   const interaction = state.interaction;
   if (!interaction) {
-    const moveHit = event.shiftKey ? hitFilledContour(point) : null;
-    const hit = hitLabel(point) || moveHit || hitTest(point);
-    if (hit?.type === "vertex" || hit?.type === "edge") {
+    const curveHit = hitTest(point);
+    const hit = curveHit?.type === "vertex" ? curveHit : hitLabel(point) || curveHit;
+    if (hit?.type === "vertex") {
       elements.canvas.style.cursor = "grab";
-    } else if (hit?.type === "label" || hit?.type === "contour") {
+    } else if (hit && state.editTool === "transform") {
       elements.canvas.style.cursor = "move";
     } else {
       elements.canvas.style.cursor = "default";
     }
+    if (state.softDrag) drawCanvas();
     return;
   }
-
-  if (interaction.type === "vertex") {
-    const contour = state.contours.find((candidate) => candidate.id === interaction.contourId);
-    if (contour) {
-      contour.points[interaction.pointIndex] = point;
-      drawCanvas();
-    }
-    return;
-  }
-
-  if (interaction.type === "soft") {
-    applySoftMove(interaction, point);
+  if (event.pointerId !== interaction.pointerId) return;
+  if (!(event.buttons & 1)) { handlePointerUp(event); return; }
+  if (interaction.type === "point") {
+    if (distance(point, interaction.startPoint) * state.scale < 2 && !interaction.moved) return;
+    interaction.moved = true;
+    replaceContour(editing.moveCurvePoint({ contour: interaction.original, pointIndex: interaction.pointIndex, point,
+      imageSize: getCurrentImageSize(), radius: interaction.radius, fixedPointIndices: interaction.fixedPointIndices }));
+    state.selectedPoint = { contourId: interaction.contourId, index: interaction.pointIndex };
     drawCanvas();
     return;
   }
-
-  if (interaction.type === "move") {
-    const rawDx = point.x - interaction.startPoint.x;
-    const rawDy = point.y - interaction.startPoint.y;
-    const targets = interaction.startContours.filter(
-      (contour) => contour.id === interaction.contourId,
-    );
-    const { dx, dy } = clampMoveDelta(targets, rawDx, rawDy);
-    state.contours = interaction.startContours.map((contour) => {
-      if (contour.id === interaction.contourId) {
-        return { ...contour, points: moveContourPoints(contour.points, dx, dy) };
+  const options = { contour: interaction.original, imageSize: getCurrentImageSize(), pivot: { x: 0, y: 0 } };
+  if (interaction.type === "transform") {
+    const { handle } = interaction;
+    options.pivot = handle.pivot;
+    if (handle.name === "rotate") {
+      options.angle = Math.atan2(point.y - handle.pivot.y, point.x - handle.pivot.x)
+        - Math.atan2(interaction.startPoint.y - handle.pivot.y, interaction.startPoint.x - handle.pivot.x);
+    } else {
+      const x = handle.point.x - handle.pivot.x, y = handle.point.y - handle.pivot.y;
+      options.scaleX = Math.abs(x) > 0.00001 ? Math.max(0.02, (point.x - handle.pivot.x) / x) : 1;
+      options.scaleY = Math.abs(y) > 0.00001 ? Math.max(0.02, (point.y - handle.pivot.y) / y) : 1;
+      if (event.shiftKey) {
+        const ratio = Math.abs(options.scaleX - 1) >= Math.abs(options.scaleY - 1) ? options.scaleX : options.scaleY;
+        options.scaleX = ratio; options.scaleY = ratio;
       }
-      return {
-        ...contour,
-        points: contour.points.map((item) => ({ ...item })),
-      };
-    });
-    drawCanvas();
+    }
+  } else {
+    options.dx = point.x - interaction.startPoint.x;
+    options.dy = point.y - interaction.startPoint.y;
   }
+  replaceContour(editing.transformContour(options));
+  drawCanvas();
 }
 
 function handlePointerUp(event) {
@@ -2883,25 +3057,18 @@ function handlePointerUp(event) {
     finishStagePan(event);
     return;
   }
-  if (elements.canvas.hasPointerCapture?.(event.pointerId)) {
-    elements.canvas.releasePointerCapture(event.pointerId);
-  }
+  if (state.interaction && state.interaction.pointerId !== event.pointerId) return;
   if (!state.interaction) {
+    if (elements.canvas.hasPointerCapture?.(event.pointerId)) elements.canvas.releasePointerCapture(event.pointerId);
     return;
   }
   const interaction = state.interaction;
-  commitChange(interaction.previousSnapshot);
   state.interaction = null;
+  if (elements.canvas.hasPointerCapture?.(event.pointerId)) elements.canvas.releasePointerCapture(event.pointerId);
+  const changed = interaction.previousSnapshot !== snapshotContours();
+  commitChange(interaction.previousSnapshot);
   renderAll();
-  const message =
-    interaction.type === "vertex"
-      ? "Vertex moved."
-      : interaction.type === "soft"
-        ? interaction.wasClamped
-          ? "Curve refined. Large drag limited."
-          : "Curve refined."
-        : "Contour moved.";
-  setStatus(message);
+  setStatus(changed ? (interaction.type === "point" ? "Point edited." : "Contour transformed.") : "Selected. Right-drag to pan · Scroll to zoom.");
 }
 
 function handleStagePointerDown(event) {
@@ -3112,7 +3279,8 @@ async function restoreFolderImage(file) {
     }
     if (restored.width !== current.width || restored.height !== current.height) throw new Error("The JSON image dimensions do not match the current image.");
     if (!window.confirm("Replace the current image's contours and unfinished drawing with this JSON? Other images are not changed.")) return;
-    state.contours = geometry.cloneContours(validateFolderImage({ data: restored, path: current.path }).contours);
+    state.contours = geometry.cloneContours(restored.contours);
+    state.selectedPoint = null;
     state.selectedId = restored.selectedId || state.contours[0]?.id || null;
     state.draftPoints = restored.draft.points.map((point) => ({ ...point }));
     state.activeLabel = restored.draft.label;
@@ -3219,6 +3387,7 @@ async function importAnnotations(file) {
  */
 function hasUnsavedAnnotationWork() {
   return Boolean(
+    state.redraw || state.deletePreview ||
     (state.interaction && state.interaction.type !== "pan") ||
     (!state.folderWorkspace && state.draftPoints.length) ||
     state.draftSaveTimer ||
@@ -3247,7 +3416,74 @@ function isInteractiveShortcutTarget(target) {
   );
 }
 
+function closeWorkspaceMenu(menu) {
+  const hadFocus = menu.contains(document.activeElement);
+  menu.open = false;
+  if (hadFocus) menu.querySelector("summary").focus({ preventScroll: true });
+}
+
+function toggleInspector(open) {
+  elements.contourInspector.classList.toggle("is-open", open);
+  elements.inspectorToggle.setAttribute("aria-expanded", String(open));
+  if (open) elements.closeInspector.focus({ preventScroll: true });
+  else elements.inspectorToggle.focus({ preventScroll: true });
+}
+
 function wireEvents() {
+  const menus = [elements.fileMenu, elements.imageQueueDisclosure, elements.moreActionsDisclosure];
+  menus.forEach((menu) => menu.addEventListener("toggle", () => {
+    if (menu.open) menus.filter((other) => other !== menu).forEach((other) => { other.open = false; });
+  }));
+  document.addEventListener("pointerdown", (event) => menus.forEach((menu) => {
+    if (menu.open && !menu.contains(event.target)) closeWorkspaceMenu(menu);
+  }));
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const openMenu = menus.find((menu) => menu.open);
+    if (openMenu) { closeWorkspaceMenu(openMenu); event.preventDefault(); event.stopImmediatePropagation(); }
+    else if (elements.contourInspector.classList.contains("is-open")) {
+      toggleInspector(false); event.preventDefault(); event.stopImmediatePropagation();
+    }
+  });
+  elements.inspectorToggle.addEventListener("click", () => toggleInspector(!elements.contourInspector.classList.contains("is-open")));
+  elements.closeInspector.addEventListener("click", () => toggleInspector(false));
+  elements.retrySaveButton.addEventListener("click", retryCurrentSave);
+  elements.backupAnnotationsButton.addEventListener("click", exportAnnotations);
+  elements.addPointButton.addEventListener("click", () => {
+    if (state.projectOperationBusy || state.interaction || state.redraw || state.deletePreview || !state.selectedId) return;
+    state.addPointArmed = !state.addPointArmed;
+    state.addPointCandidate = null;
+    renderAll();
+    elements.canvas.focus({ preventScroll: true });
+  });
+  elements.applyDeleteButton.addEventListener("click", applyPointDeletion);
+  elements.cancelDeleteButton.addEventListener("click", cancelPointDeletion);
+  elements.newContourLabel.addEventListener("change", (event) => {
+    if (state.projectOperationBusy) return;
+    const nextLabel = event.target.value;
+    const nextClosed = normalizeClosedForLabel(nextLabel);
+    if (state.draftPoints.length && nextClosed !== state.drawClosed) {
+      event.target.value = state.activeLabel;
+      setStatus("Finish or cancel the current contour before changing its shape type.", true);
+      return;
+    }
+    state.activeLabel = nextLabel;
+    if (!state.draftPoints.length) state.drawClosed = nextClosed;
+    renderAll(); scheduleDraftSave();
+  });
+  elements.selectedContourLabel.addEventListener("change", (event) => {
+    const contour = state.contours.find((candidate) => candidate.id === state.selectedId);
+    if (!contour || state.projectOperationBusy || state.interaction || state.redraw || state.deletePreview) return;
+    const label = event.target.value;
+    if (!isShapeAllowed(label, contour.closed)) {
+      event.target.value = contour.label;
+      setStatus(`${getLabel(label).name} does not allow ${getShapeType(contour.closed)}.`, true);
+      return;
+    }
+    const previous = snapshotContours();
+    contour.label = label;
+    commitChange(previous); renderAll();
+  });
   elements.openDirectoryButton.addEventListener("click", chooseImageDirectory);
   elements.chooseOutputButton.addEventListener("click", chooseOutputDirectory);
   elements.saveNowButton.addEventListener("click", retryCurrentSave);
@@ -3299,7 +3535,23 @@ function wireEvents() {
   elements.clearButton.addEventListener("click", clearContours);
   elements.finishDraftButton.addEventListener("click", finishDraftWithDefault);
   elements.cancelDraftButton.addEventListener("click", cancelDraft);
-  elements.densifyButton.addEventListener("click", densifySelectedContour);
+  elements.deletePointButton.addEventListener("click", deleteSelectedPoint);
+  elements.applyRedrawButton.addEventListener("click", applyRedraw);
+  elements.cancelRedrawButton.addEventListener("click", cancelRedraw);
+  elements.alternateRedrawButton.addEventListener("click", () => {
+    if (!state.redraw?.end || state.projectOperationBusy) return;
+    state.redraw.alternate = !state.redraw.alternate;
+    updateRedrawPreview();
+  });
+  elements.editToolButtons.forEach((button) => button.addEventListener("click", () => {
+    if (state.projectOperationBusy || state.interaction || !confirmDiscardRedraw()) return;
+    state.editTool = button.dataset.editTool;
+    state.mode = "refine";
+    resetPointInsertion();
+    state.selectedPoint = null;
+    state.hoverPoint = null;
+    renderAll();
+  }));
   elements.zoomOutButton.addEventListener("click", () => zoomImage(-1));
   elements.zoomInButton.addEventListener("click", () => zoomImage(1));
   elements.zoomFitButton.addEventListener("click", resetImageZoom);
@@ -3307,7 +3559,8 @@ function wireEvents() {
   elements.softDragToggle.addEventListener("change", (event) => {
     state.softDrag = event.target.checked;
     scheduleDraftSave();
-    setStatus(state.softDrag ? "Smooth edit enabled." : "Smooth edit disabled.");
+    drawCanvas();
+    setStatus(state.softDrag ? "Soft edit enabled. The highlighted arc shows the affected range." : "Direct point editing enabled.");
   });
 
   elements.showPointsToggle.addEventListener("change", (event) => {
@@ -3317,13 +3570,14 @@ function wireEvents() {
     setStatus(
       state.showPoints
         ? "Point handles shown."
-        : "Line edit mode: drag the contour line to reshape.",
+        : "Point handles hidden. Double-click a line to add a point, or use Transform to move the contour.",
     );
   });
 
   elements.softRadiusInput.addEventListener("input", (event) => {
     state.softRadius = finiteNumber(event.target.value, DEFAULT_SOFT_RADIUS);
     elements.softRadiusValue.textContent = `${state.softRadius} px`;
+    drawCanvas();
     scheduleDraftSave();
   });
 
@@ -3335,9 +3589,19 @@ function wireEvents() {
   });
 
   elements.canvas.addEventListener("pointerdown", handlePointerDown);
+  elements.canvas.addEventListener("dblclick", (event) => {
+    if (event.button !== 0 || state.spacePressed) return;
+    event.preventDefault();
+    insertPointAt(toCanvasPoint(event));
+  });
+  elements.canvas.addEventListener("pointerleave", () => {
+    state.addPointCandidate = null;
+    drawCanvas();
+  });
   elements.canvas.addEventListener("pointermove", handlePointerMove);
   elements.canvas.addEventListener("pointerup", handlePointerUp);
   elements.canvas.addEventListener("pointercancel", (event) => {
+    if (state.interaction && state.interaction.pointerId !== event.pointerId) return;
     if (state.interaction?.type === "pan") {
       finishStagePan(event);
       return;
@@ -3355,11 +3619,21 @@ function wireEvents() {
     // Reserve right-drag for panning only inside the loaded image workspace.
     if (state.image) event.preventDefault();
   });
+  elements.stageShell.addEventListener("wheel", (event) => {
+    if (!state.image || state.projectOperationBusy || state.interaction) return;
+    event.preventDefault();
+    zoomImage(event.deltaY < 0 ? 1 : -1);
+  }, { passive: false });
+  elements.canvas.addEventListener("lostpointercapture", (event) => {
+    if (state.interaction?.type !== "pan" && state.interaction?.pointerId === event.pointerId) handlePointerUp(event);
+  });
 
   window.addEventListener("blur", () => {
     state.spacePressed = false;
     if (state.interaction?.type === "pan") {
       finishStagePan(state.interaction);
+    } else if (state.interaction) {
+      handlePointerUp(state.interaction);
     }
   });
 
@@ -3388,8 +3662,20 @@ function wireEvents() {
     }
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
-      deleteSelected();
+      if (event.repeat || state.interaction || state.deletePreview) return;
+      if (state.redraw) {
+        state.redraw.preview = null; state.redraw.end = null;
+        state.redraw.points.pop(); renderAll();
+      } else if (state.mode === "refine" && state.editTool === "points") deleteSelectedPoint();
+      else if (state.mode === "draw" && state.draftPoints.length) {
+        state.draftPoints.pop(); scheduleDraftSave(); renderAll();
+      }
     }
+    if (event.key === "Enter" && state.deletePreview) { event.preventDefault(); applyPointDeletion(); return; }
+    if (event.key === "Escape" && state.deletePreview) { event.preventDefault(); cancelPointDeletion(); return; }
+    if (event.key === "Escape" && state.addPointArmed) { event.preventDefault(); resetPointInsertion(); renderAll(); return; }
+    if (event.key === "Enter" && state.redraw) { event.preventDefault(); applyRedraw(); }
+    if (event.key === "Escape" && state.redraw) { event.preventDefault(); cancelRedraw(); }
     if (event.key === "Enter" && state.mode === "draw") {
       event.preventDefault();
       finishDraftWithDefault();

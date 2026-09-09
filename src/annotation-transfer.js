@@ -3,17 +3,17 @@ import {
   MAX_RELATIVE_PATH_LENGTH,
   MIN_CLOSED_POINTS,
   MIN_OPEN_POINTS,
-} from "./config.js?v=image-set-annotations-1";
+} from "./config.js?v=workspace-ux-1";
 import {
   buildTaskSchema,
   normalizeImportedContours,
   serializeContours,
   validateContoursForTaskSchema,
-} from "./exporter.js?v=image-set-annotations-1";
-import { getProgress, isImageStatus } from "./project.js?v=image-set-annotations-1";
+} from "./exporter.js?v=workspace-ux-1";
+import { getProgress, isImageStatus } from "./project.js?v=workspace-ux-1";
 
 export const ANNOTATION_FILE_KIND = "face-contour-annotations";
-export const ANNOTATION_FILE_SCHEMA_VERSION = 1;
+export const ANNOTATION_FILE_SCHEMA_VERSION = 2;
 
 const LEGACY_BATCH_VERSION = "face-contour-project-v1";
 const LEGACY_SINGLE_VERSION = "face-contour-annotator-v1";
@@ -279,11 +279,14 @@ function normalizeLegacyBatch(data) {
 function getEnvelope(data) {
   const value = asObject({ value: data, field: "Annotation file" });
   if (value.kind === ANNOTATION_FILE_KIND) {
-    if (value.schemaVersion !== ANNOTATION_FILE_SCHEMA_VERSION) {
+    if (![1, ANNOTATION_FILE_SCHEMA_VERSION].includes(value.schemaVersion)) {
       fail({
         code: ANNOTATION_TRANSFER_ERROR_CODES.UNSUPPORTED_VERSION,
         message: `Annotation schema version ${String(value.schemaVersion)} is not supported.`,
       });
+    }
+    if (value.schemaVersion === 2 && Array.isArray(value.images) && value.images.some((image) => Array.isArray(image?.contours) && image.contours.some((contour) => !contour?.curve))) {
+      fail({ code: ANNOTATION_TRANSFER_ERROR_CODES.INVALID_FILE, message: "Version 2 annotations require editable curve data." });
     }
     return {
       legacy: false,
@@ -509,10 +512,7 @@ export function assertAnnotationImportHasMatches(plan) {
 }
 
 function cloneContours(contours) {
-  return contours.map((contour) => ({
-    ...contour,
-    points: contour.points.map((point) => ({ ...point })),
-  }));
+  return structuredClone(contours);
 }
 
 export function applyAnnotationImport({ imageSet, annotations, plan, importedAt = new Date().toISOString() }) {

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Face Contour Lab · Workspace preview</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./preview.css">
+  <script src="./preview.js" defer></script>
+</head>
+<body>
+  <div class="app-preview">
+    <header class="project-bar">
+      <h1>Face Contour Lab</h1>
+      <span class="preview-badge">Design preview</span>
+      <span class="divider" aria-hidden="true"></span>
+      <div class="project-identity">
+        <strong>fbx_2d_pbr_clean_1915</strong>
+        <span>Local folder project</span>
+      </div>
+      <div class="header-actions">
+        <button id="saveStatus" class="save-status" title="Preview of the saved and failed states"><span class="status-dot"></span><span id="saveStatusText">Saved to folder</span><span class="demo-label">demo</span></button>
+        <button id="fileButton" class="text-button" popovertarget="fileMenu">File <span aria-hidden="true">⌄</span></button>
+        <button class="outline-button" data-notice="This is a separate preview. Your annotation project is still untouched.">Exit project</button>
+      </div>
+    </header>
+
+    <div class="save-error" id="saveError" hidden>
+      <span><strong>Save failed — example state.</strong> Keep working here until the file is safe.</span>
+      <button id="retryButton">Retry save</button>
+      <button data-notice="In the real workspace, this downloads the current annotation as a backup. Nothing is downloaded by this preview.">Download backup</button>
+    </div>
+
+    <div class="editor-layout">
+      <main class="editor" aria-label="Annotation workspace layout preview">
+        <nav class="tool-bar" aria-label="Annotation tools">
+          <button class="initialize-button" id="initializeButton">Initialize</button>
+          <span class="divider" aria-hidden="true"></span>
+          <div class="tool-group" role="group" aria-label="Editing tool">
+            <button data-tool="points" aria-pressed="true">Edit points</button>
+            <button data-tool="transform" aria-pressed="false">Transform</button>
+            <button data-tool="redraw" aria-pressed="false">Redraw section</button>
+            <button data-tool="new" aria-pressed="false">New contour</button>
+          </div>
+          <span class="divider history-divider" aria-hidden="true"></span>
+          <div class="history-actions"><button data-notice="Undo and redo will stay beside the editing tools. This preview does not modify contours.">Undo</button><button disabled>Redo</button></div>
+          <button id="inspectorToggle" class="outline-button inspector-toggle" aria-expanded="false" aria-controls="inspector">Contours</button>
+          <div class="zoom-actions" aria-label="Canvas zoom">
+            <button id="zoomOut" aria-label="Zoom out">−</button><span id="zoomValue">100%</span><button id="zoomIn" aria-label="Zoom in">+</button><button id="fitButton">Fit</button>
+          </div>
+        </nav>
+
+        <section class="context-bar" aria-label="Current tool options">
+          <div class="selection-caption"><span class="swatch" id="selectionSwatch"></span><span>Editing</span><strong id="selectionName">right eye</strong></div>
+          <div id="pointOptions" class="context-options"><button id="addPointButton">+ Add point</button><button data-notice="Delete will remove only a selected point, never fall back to deleting the whole contour. Preview only.">Delete point</button></div>
+          <div id="transformOptions" class="context-options" hidden><span class="option-text">Move · Resize · Rotate</span></div>
+          <div id="redrawOptions" class="context-options" hidden><button data-notice="Redraw preview confirmed for this demonstration only.">Apply</button><button id="cancelRedraw">Cancel</button><button data-notice="The alternate arc will be highlighted before a redraw is applied.">Other arc</button></div>
+          <div id="newOptions" class="context-options" hidden><label>Label <select id="newLabel"><option>face outline</option><option>left eye</option><option>right eye</option><option>nose</option><option>mouth</option></select></label><span class="option-text">Closed region</span></div>
+          <span class="context-hint" id="contextHint">Double-click line to add · Drag point to move</span>
+        </section>
+
+        <div class="stage" id="stage">
+          <div class="stage-meta"><span>0_00000 / pose_00_sample_00 / <strong>pbr.png</strong></span><span>1024 × 1024</span></div>
+          <div class="image-viewport" id="imageViewport">
+            <div class="image-frame" id="imageFrame">
+              <img id="portrait" src="./portrait.png" width="1024" height="1024" alt="Original frontal rendered face used as the annotation preview image" draggable="false">
+              <svg id="annotationOverlay" viewBox="0 0 1024 1024" aria-label="Illustrative facial contours; select a curve to inspect it"><g id="curves"></g><g id="activeHandles"></g><g id="transformOverlay" hidden></g><g id="curveTag"></g></svg>
+            </div>
+          </div>
+          <div class="stage-footnote"><span>Right-drag to pan · Scroll to zoom</span><span>Illustrative contours</span></div>
+        </div>
+        <div id="toast" class="toast" role="status" hidden></div>
+      </main>
+
+      <aside class="inspector" id="inspector" aria-labelledby="contoursTitle">
+        <header class="inspector-header"><h2 id="contoursTitle">Contours</h2><span class="count-badge">9</span><button id="closeInspector" class="close-inspector" aria-label="Close contour panel">Close</button></header>
+        <div class="inspector-scroll">
+          <div class="list-caption"><span>Feature</span><span>Points</span></div>
+          <div id="contourList" class="contour-list" role="group" aria-label="Contour selection"></div>
+          <section class="selected-properties" aria-labelledby="selectedTitle">
+            <h3 id="selectedTitle">Selected contour</h3>
+            <label class="field-label" for="labelField">Label</label>
+            <select id="labelField" aria-describedby="propertyMeta"><option>right eye</option></select>
+            <div class="property-meta" id="propertyMeta"><span>Closed curve</span><span>28 points</span></div>
+            <details class="advanced"><summary>Advanced editing</summary><div class="advanced-body"><label><input id="showPoints" type="checkbox" checked> Show control points</label><label><input id="softEdit" type="checkbox"> Soft edit</label><label class="radius-label">Influence <span id="radiusValue">40 px</span></label><input id="radiusInput" type="range" min="4" max="96" value="40" aria-label="Soft edit influence"></div></details>
+            <button class="object-menu-button" popovertarget="objectMenu">Contour actions <span aria-hidden="true">⌄</span></button>
+          </section>
+        </div>
+        <div class="preview-note"><strong>Layout preview</strong><p>Tools and panels are interactive.<br>No annotations or files are changed.</p></div>
+      </aside>
+    </div>
+
+    <footer class="task-bar">
+      <button class="outline-button" id="queueButton" popovertarget="queuePanel">Image queue</button>
+      <span class="divider" aria-hidden="true"></span>
+      <div class="navigation-buttons"><button id="previousButton" disabled>Previous</button><button id="nextButton">Next</button></div>
+      <span class="position"><strong id="currentPosition">1</strong><span>/</span>1,915</span>
+      <span class="preview-task-status" id="taskStatus">Not reviewed</span>
+      <div class="task-actions"><button data-status="Skipped">Skip</button><button data-status="Needs review">Review</button><button class="primary-button" data-status="Done">Done</button></div>
+    </footer>
+  </div>
+
+  <div id="fileMenu" class="popup file-menu" popover><strong>Annotation files</strong><button data-notice="The real workspace saves the current image to its output folder. Preview only.">Save now</button><button data-notice="Download current JSON is available here in the implemented layout. Preview only.">Download current JSON</button><button data-notice="Restore current JSON will retain the existing validation and confirmation flow. Preview only.">Restore current JSON</button><hr><button id="showErrorButton">Preview save error</button></div>
+  <div id="objectMenu" class="popup object-menu" popover><strong>Selected contour</strong><button class="danger-text" data-notice="Whole-contour deletion is kept separate from deleting a point. No contour was deleted in this preview.">Delete contour</button></div>
+  <div id="queuePanel" class="popup queue-panel" popover><header><strong>Image queue</strong><span>Demo navigation</span></header><button data-position="1">01 <span>pose_00_sample_00 / pbr.png</span></button><button data-position="2">02 <span>Sample image 2</span></button><button data-position="3">03 <span>Sample image 3</span></button><p>Navigation changes the preview counter only.</p></div>
+</body>
+</html>

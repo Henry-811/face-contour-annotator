@@ -340,115 +340,6 @@
         font-size: 13px;
       }
 
-      .app {
-        display: grid;
-        grid-template-columns: 292px minmax(360px, 1fr) 352px;
-        height: 100vh;
-        min-height: 580px;
-      }
-
-      .sidebar,
-      .inspector {
-        display: flex;
-        min-height: 0;
-        min-width: 0;
-        flex-direction: column;
-        border-color: var(--line);
-        background: rgba(251, 250, 244, 0.96);
-        backdrop-filter: blur(10px);
-      }
-
-      .sidebar {
-        border-right: 1px solid var(--line);
-        overflow: hidden;
-      }
-
-      .inspector {
-        border-left: 1px solid var(--line);
-      }
-
-      .sidebar-scroll {
-        min-height: 0;
-        flex: 1;
-        overflow-y: auto;
-      }
-
-      .workspace-project-header {
-        flex: 0 0 auto;
-        padding: 16px 18px 15px;
-        border-bottom: 1px solid var(--line);
-        background: rgba(251, 250, 244, 0.98);
-      }
-
-      .workspace-brand-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        margin-bottom: 14px;
-      }
-
-      .workspace-brand-row h1 {
-        margin: 0;
-        font-family: Georgia, "Aptos Display", serif;
-        font-size: 20px;
-        line-height: 1.05;
-      }
-
-      .exit-project-button {
-        min-height: 32px;
-        padding: 0 10px;
-        white-space: nowrap;
-      }
-
-      .section.actions-section {
-        flex: 0 0 auto;
-        padding-top: 12px;
-        padding-bottom: 12px;
-        border-top: 1px solid var(--line);
-        border-bottom: 0;
-        background: rgba(251, 250, 244, 0.98);
-        box-shadow: 0 -12px 24px rgba(31, 38, 34, 0.08);
-      }
-
-      .brand {
-        padding: 22px 20px 18px;
-        border-bottom: 1px solid var(--line);
-      }
-
-      .brand h1 {
-        margin: 0;
-        font-family: Georgia, "Aptos Display", serif;
-        font-size: 26px;
-        font-weight: 700;
-        letter-spacing: 0;
-      }
-
-      .brand .subline {
-        margin-top: 5px;
-        color: var(--muted);
-        font-size: 12px;
-        text-transform: uppercase;
-      }
-
-      .section {
-        padding: 16px 18px;
-        border-bottom: 1px solid var(--line);
-      }
-
-      .section-title {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        margin-bottom: 10px;
-        color: #36413c;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
       .primary-button {
         width: 100%;
         border-color: var(--accent);
@@ -480,101 +371,11 @@
         grid-template-columns: 1fr;
       }
 
-      .mode-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-      }
-
-      .shape-mode-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-
-      .mode-button.is-active,
-      .shape-mode-button.is-active,
-      .label-button.is-active {
-        border-color: var(--ink);
-        background: var(--ink);
-        color: #fff;
-      }
-
-      .label-grid {
-        display: grid;
-        gap: 7px;
-      }
-
-      .label-button {
-        display: grid;
-        grid-template-columns: 16px minmax(0, 1fr);
-        align-items: center;
-        gap: 9px;
-        width: 100%;
-        min-height: 34px;
-        padding: 0 10px;
-        text-align: left;
-      }
-
       .swatch {
         width: 12px;
         height: 12px;
         border: 1px solid rgba(0, 0, 0, 0.18);
         border-radius: 50%;
-      }
-
-      .switch {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 46px;
-        align-items: center;
-        gap: 12px;
-        min-height: 40px;
-        padding: 0 4px 0 0;
-      }
-
-      .switch-label {
-        min-width: 0;
-        font-weight: 700;
-      }
-
-      .switch input {
-        position: absolute;
-        opacity: 0;
-        pointer-events: none;
-      }
-
-      .switch-track {
-        position: relative;
-        width: 46px;
-        height: 26px;
-        border: 1px solid var(--line-strong);
-        border-radius: 999px;
-        background: #d8ddd7;
-      }
-
-      .switch-track::after {
-        position: absolute;
-        top: 3px;
-        left: 3px;
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        background: #fff;
-        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
-        content: "";
-        transition:
-          transform 150ms ease,
-          background 150ms ease;
-      }
-
-      .switch input:checked + .switch-track {
-        border-color: var(--accent);
-        background: var(--accent);
-      }
-
-      .switch input:checked + .switch-track::after {
-        transform: translateX(20px);
       }
 
       .range-row {
@@ -596,30 +397,6 @@
         width: 100%;
         margin-top: 8px;
         accent-color: var(--accent);
-      }
-
-      .shape-hint {
-        margin-top: 9px;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.35;
-      }
-
-      .project-summary {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        min-width: 0;
-        gap: 6px;
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .progress-line {
-        display: flex;
-        min-width: 0;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
       }
 
       .save-state {
@@ -697,47 +474,6 @@
         color: var(--hot);
       }
 
-      .workspace {
-        display: grid;
-        grid-template-rows: auto minmax(0, 1fr) 38px;
-        min-width: 0;
-        min-height: 0;
-      }
-
-      .topbar,
-      .statusbar {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        padding: 0 18px;
-        border-bottom: 1px solid var(--line);
-        background: rgba(251, 250, 244, 0.76);
-      }
-
-      .statusbar {
-        min-height: 38px;
-        border-top: 1px solid var(--line);
-        border-bottom: 0;
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .topbar {
-        min-height: 56px;
-        flex-wrap: wrap;
-        align-content: center;
-        padding-top: 8px;
-        padding-bottom: 8px;
-      }
-
-      .file-meta {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-weight: 700;
-      }
-
       .pill {
         display: inline-flex;
         align-items: center;
@@ -749,26 +485,6 @@
         color: var(--muted);
         font-size: 12px;
         white-space: nowrap;
-      }
-
-      .zoom-controls {
-        display: inline-grid;
-        grid-template-columns: 30px minmax(52px, auto) 30px 44px;
-        align-items: center;
-        gap: 5px;
-        margin-left: auto;
-      }
-
-      .zoom-button {
-        min-width: 30px;
-        min-height: 28px;
-        padding: 0 7px;
-        font-weight: 700;
-      }
-
-      .zoom-value {
-        justify-content: center;
-        min-width: 52px;
       }
 
       .stage-shell {
@@ -858,82 +574,6 @@
         min-width: 160px;
       }
 
-      .inspector-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 18px;
-        border-bottom: 1px solid var(--line);
-      }
-
-      .inspector-header h2 {
-        margin: 0;
-        font-family: Georgia, serif;
-        font-size: 22px;
-        letter-spacing: 0;
-      }
-
-      .contour-list {
-        min-height: 0;
-        flex: 1;
-        overflow: auto;
-        padding: 12px;
-      }
-
-      .contour-item {
-        display: grid;
-        gap: 8px;
-        margin-bottom: 10px;
-        padding: 10px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: #fffef8;
-      }
-
-      .contour-item.is-selected {
-        border-color: var(--accent);
-        box-shadow: inset 4px 0 0 var(--accent);
-      }
-
-      .contour-item-top {
-        display: grid;
-        grid-template-columns: 14px 28px minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .contour-index {
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 700;
-      }
-
-      .contour-item select {
-        width: 100%;
-        min-width: 0;
-        min-height: 32px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: #ffffff;
-        color: var(--ink);
-      }
-
-      .contour-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .small-button {
-        min-width: 34px;
-        min-height: 32px;
-        padding: 0 9px;
-        font-weight: 700;
-      }
-
       .danger {
         border-color: rgba(216, 75, 42, 0.44);
         color: var(--hot);
@@ -943,114 +583,9 @@
         border-color: var(--hot);
       }
 
-      .transfer-panel {
-        padding: 14px 18px 18px;
-        border-top: 1px solid var(--line);
-      }
-
-      .transfer-group + .transfer-group {
-        margin-top: 14px;
-        padding-top: 14px;
-        border-top: 1px solid var(--line);
-      }
-
-      .transfer-title {
-        margin: 0;
-        color: #36413c;
-        font-size: 12px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      .sidebar-disclosure {
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: rgba(255, 254, 248, 0.72);
-      }
-
-      .sidebar-disclosure summary {
-        display: flex;
-        min-height: 38px;
-        align-items: center;
-        gap: 8px;
-        padding: 7px 10px;
-        cursor: pointer;
-        font-size: 13px;
-        font-weight: 700;
-        list-style: none;
-      }
-
-      .sidebar-disclosure summary::-webkit-details-marker {
-        display: none;
-      }
-
-      .sidebar-disclosure summary::after {
-        margin-left: auto;
-        color: var(--muted);
-        content: "+";
-        font-size: 18px;
-        font-weight: 400;
-        line-height: 1;
-      }
-
-      .sidebar-disclosure[open] summary {
-        border-bottom: 1px solid var(--line);
-      }
-
-      .sidebar-disclosure[open] summary::after {
-        content: "−";
-      }
-
-      .sidebar-disclosure:not([open]) > .disclosure-body {
-        display: none;
-      }
-
-      .disclosure-copy {
-        display: grid;
-        min-width: 0;
-        gap: 2px;
-      }
-
-      .disclosure-caption,
-      .disclosure-meta {
-        color: var(--muted);
-        font-size: 11px;
-        font-weight: 400;
-      }
-
-      .disclosure-meta {
-        margin-left: auto;
-        white-space: nowrap;
-      }
-
-      .disclosure-body {
-        display: grid;
-        gap: 8px;
-        padding: 10px;
-      }
-
-      .project-section .project-summary {
-        margin-bottom: 10px;
-      }
-
-      .project-name {
-        flex: 1 1 0;
-        min-width: 0;
-        overflow: hidden;
-        color: var(--ink);
-        font-size: 13px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
       #projectProgress {
         flex: 0 0 auto;
         white-space: nowrap;
-      }
-
-      .image-navigation {
-        display: grid;
-        gap: 8px;
       }
 
       .queue-disclosure {
@@ -1059,22 +594,6 @@
 
       .queue-disclosure .queue-list {
         margin-top: 0;
-      }
-
-      .annotation-heading {
-        padding: 14px 18px 6px;
-        color: var(--accent);
-        font-family: Georgia, "Aptos Display", serif;
-        font-size: 16px;
-        font-weight: 700;
-      }
-
-      .annotation-controls .section {
-        padding-top: 12px;
-      }
-
-      .more-actions-section {
-        padding-top: 10px;
       }
 
       .transfer-help {
@@ -1187,19 +706,6 @@
           overflow: auto;
         }
 
-        .app {
-          grid-template-columns: 260px minmax(320px, 1fr);
-          grid-template-rows: minmax(540px, 70vh) minmax(360px, 1fr);
-          height: auto;
-          min-height: 100vh;
-        }
-
-        .inspector {
-          grid-column: 1 / -1;
-          border-top: 1px solid var(--line);
-          border-left: 0;
-        }
-
         .hub-masthead {
           align-items: flex-start;
           flex-direction: column;
@@ -1254,45 +760,6 @@
           min-height: 44px;
         }
 
-        .app {
-          display: block;
-        }
-
-        .sidebar,
-        .sidebar-scroll {
-          overflow: visible;
-        }
-
-        .workspace-project-header {
-          position: sticky;
-          z-index: 20;
-          top: 0;
-        }
-
-        .workspace {
-          height: 68vh;
-        }
-
-        .brand {
-          padding: 18px 16px 14px;
-        }
-
-        .section {
-          padding-right: 16px;
-          padding-left: 16px;
-        }
-
-        .annotation-heading {
-          padding-right: 16px;
-          padding-left: 16px;
-        }
-
-        .label-grid {
-          grid-template-columns: repeat(5, minmax(148px, 1fr));
-          padding-bottom: 4px;
-          overflow-x: auto;
-        }
-
       }
 
       @media (max-width: 360px) {
@@ -1310,6 +777,7 @@
         }
       }
     </style>
+    <link rel="stylesheet" href="./src/workspace.css?v=workspace-ux-1" />
   </head>
   <body>
     <main class="project-hub" id="projectHubView" aria-labelledby="hubTitle">
@@ -1384,244 +852,176 @@
     </main>
 
     <main class="app" id="annotationWorkspaceView" aria-labelledby="workspaceTitle" hidden>
-      <aside class="sidebar">
-        <header class="workspace-project-header">
-          <div class="workspace-brand-row">
-            <h1 id="workspaceTitle" tabindex="-1">Face Contour Lab</h1>
-            <button class="exit-project-button" id="exitProjectButton" type="button">
-              Exit project
-            </button>
+      <header class="project-bar">
+        <h1 id="workspaceTitle" tabindex="-1">Face Contour Lab</h1>
+        <div class="divider"></div>
+        <div class="project-identity" id="projectSummary">
+          <strong id="projectName">Loading project</strong>
+          <span id="projectProgress">0 done, 0 active</span>
+        </div>
+        <div class="header-actions">
+          <span class="save-state" id="projectSaveState" data-state="idle" role="status">Loading…</span>
+          <details class="workspace-menu" id="fileMenu">
+            <summary>File</summary>
+            <div class="menu-panel file-panel">
+              <button id="saveNowButton" type="button">Save now</button>
+              <p id="folderOutputLocation" hidden></p>
+              <p class="transfer-help" id="annotationImportHelp"></p>
+              <button id="exportAnnotationsButton" type="button">Export JSON</button>
+              <button id="importAnnotationsButton" type="button">Import JSON</button>
+              <details id="annotationImportReport" class="import-report" hidden>
+                <summary id="annotationImportSummary">Import report</summary>
+                <div class="match-list"><ul id="annotationImportIssues"></ul></div>
+              </details>
+              <details class="export-debug">
+                <summary>Preview annotation JSON</summary>
+                <textarea class="json-output" id="jsonOutput" readonly spellcheck="false" aria-label="Annotation JSON"></textarea>
+              </details>
+            </div>
+          </details>
+          <button class="outline-button" id="exitProjectButton" type="button">Exit project</button>
+        </div>
+      </header>
+      <div class="save-error" id="saveErrorBanner" role="alert" hidden>
+        <span id="saveErrorReason">Save failed. Keep this page open and retry or download a backup.</span>
+        <button id="retrySaveButton" type="button">Retry save</button>
+        <button id="backupAnnotationsButton" type="button">Download JSON</button>
+      </div>
+      <div class="editor-layout">
+        <section class="workspace">
+          <div class="tool-bar" id="annotationControls">
+            <button class="initialize-button" id="initializeTemplateButton" type="button">Initialize</button>
+            <div class="divider"></div>
+            <div class="tool-group" role="group" aria-label="Contour editing tool">
+              <button type="button" data-edit-tool="points" aria-pressed="true">Edit points</button>
+              <button type="button" data-edit-tool="transform" aria-pressed="false">Transform</button>
+              <button type="button" data-edit-tool="redraw" aria-pressed="false">Redraw section</button>
+              <button type="button" class="mode-button" data-mode="draw" aria-pressed="false">New contour</button>
+            </div>
+            <div class="divider history-divider"></div>
+            <div class="history-actions" id="actionsSection">
+              <button id="undoButton" type="button" title="Undo (Ctrl+Z)">Undo</button>
+              <button id="redoButton" type="button" title="Redo (Ctrl+Y)">Redo</button>
+            </div>
+            <div class="zoom-actions" aria-label="Image zoom controls">
+              <button id="zoomOutButton" type="button" aria-label="Zoom image out">−</button>
+              <span id="zoomValue">Fit</span>
+              <button id="zoomInButton" type="button" aria-label="Zoom image in">+</button>
+              <button class="outline-button" id="zoomFitButton" type="button">Fit</button>
+            </div>
+            <button class="inspector-toggle" id="inspectorToggle" type="button" aria-controls="contourInspector" aria-expanded="false">Contours</button>
           </div>
-          <div class="project-summary" id="projectSummary">
-            <div class="progress-line">
-              <strong class="project-name" id="projectName">Loading project</strong>
-              <span id="projectProgress">0 done, 0 active</span>
-            </div>
-            <div class="save-state" id="projectSaveState" data-state="idle">Loading…</div>
-            <div class="folder-output-location" id="folderOutputLocation" hidden></div>
-            <button id="saveNowButton" type="button" hidden>Save now</button>
+          <div class="context-bar">
+            <section id="refineToolsSection" class="context-options">
+              <span class="selection-caption" id="selectionCaption">Select a contour</span>
+              <div class="context-options" id="pointActions">
+                <button id="addPointButton" type="button" aria-pressed="false">+ Add point</button>
+                <button id="deletePointButton" type="button">Delete point</button>
+              </div>
+              <div class="context-options" id="redrawActions" hidden>
+                <button id="applyRedrawButton" type="button">Apply</button>
+                <button id="cancelRedrawButton" type="button">Cancel</button>
+                <button id="alternateRedrawButton" type="button">Use other arc</button>
+              </div>
+              <div class="context-options" id="deletePreviewActions" hidden>
+                <strong>Delete point preview</strong>
+                <button id="applyDeleteButton" type="button">Apply deletion</button>
+                <button id="cancelDeleteButton" type="button">Cancel</button>
+              </div>
+              <span id="editToolHint" class="context-hint"></span>
+            </section>
+            <section id="drawToolsSection" class="context-options" hidden>
+              <label for="newContourLabel">Label</label>
+              <select id="newContourLabel"></select>
+              <button class="shape-mode-button" data-shape="open" type="button">Open line</button>
+              <button class="shape-mode-button" data-shape="closed" type="button">Closed region</button>
+              <button id="finishDraftButton" type="button">Finish</button>
+              <button id="cancelDraftButton" type="button">Cancel</button>
+              <span class="context-hint" id="shapeHint"></span>
+            </section>
           </div>
-        </header>
-
-        <div class="sidebar-scroll">
-          <section class="section" id="imageWorkflowSection" hidden>
-            <div class="section-title">
-              Images
-              <span class="pill" id="projectPosition">0 / 0</span>
+          <header class="stage-meta">
+            <span class="file-meta" id="fileMeta">No image loaded</span>
+            <span id="imageSize">0 x 0</span>
+          </header>
+          <section class="stage-shell" id="stageShell">
+            <div class="canvas-wrap">
+              <canvas id="annotationCanvas" width="1" height="1" tabindex="0" aria-label="Image annotation canvas"></canvas>
             </div>
-            <div class="image-navigation">
-              <div class="button-row">
-                <button id="previousImageButton" type="button">Previous</button>
-                <button id="nextImageButton" type="button">Next</button>
-              </div>
-              <div class="button-row three">
-                <button id="markDoneButton" type="button">Done</button>
-                <button id="skipImageButton" type="button">Skip</button>
-                <button id="needsReviewButton" type="button">Review</button>
-              </div>
-            </div>
-            <details class="sidebar-disclosure queue-disclosure" id="imageQueueDisclosure">
-              <summary>
-                <span>Image queue</span>
-                <span class="disclosure-meta" id="imageQueueSummary">0 images</span>
-              </summary>
-              <div class="disclosure-body">
-                <div class="queue-list" id="imageQueueList"></div>
-                <div class="queue-pagination" id="queuePagination" hidden>
-                  <button id="queuePreviousPage" type="button" aria-label="Previous page of images">Back</button>
-                  <span id="queuePageLabel" aria-live="polite"></span>
-                  <button id="queueNextPage" type="button" aria-label="Next page of images">More</button>
-                </div>
-              </div>
-            </details>
+            <div class="empty-state" id="emptyState"><div class="empty-card"><strong>Loading project image…</strong></div></div>
           </section>
-
-          <div class="annotation-controls" id="annotationControls" hidden>
-            <div class="annotation-heading">Annotate</div>
-
-            <section class="section">
-              <div class="section-title">Label</div>
-              <div class="label-grid" id="labelGrid"></div>
+          <footer class="statusbar" role="status" aria-live="polite">
+            <span id="statusText">Right-drag to pan. Scroll to zoom.</span>
+            <span id="cursorMeta">x 0, y 0</span>
+            <span id="draftMeta">0 draft points</span>
+          </footer>
+        </section>
+        <aside class="inspector" id="contourInspector" aria-label="Contours">
+          <header class="inspector-header">
+            <h2>Contours</h2><span id="contourCount">0</span>
+            <button id="closeInspector" class="close-inspector" type="button">Close</button>
+          </header>
+          <div class="inspector-scroll">
+            <div class="list-caption"><span>Feature</span><span>Points</span></div>
+            <section class="contour-list" id="contourList" aria-label="Contour objects"></section>
+            <section class="selected-properties" id="selectedProperties" hidden>
+              <h3>Selected contour</h3>
+              <label class="field-label" for="selectedContourLabel">Label</label>
+              <select id="selectedContourLabel"></select>
+              <div class="property-meta" id="selectedContourMeta"></div>
             </section>
-
-            <section class="section">
-              <div class="section-title">Mode</div>
-              <div class="mode-grid">
-                <button class="mode-button is-active" data-mode="draw" type="button">
-                  Draw
-                </button>
-                <button class="mode-button" data-mode="refine" type="button">Refine</button>
-              </div>
-            </section>
-
-            <section class="section" id="drawToolsSection">
-              <div class="section-title">Draw contour</div>
-              <div class="shape-mode-grid">
-                <button class="shape-mode-button" data-shape="open" type="button">
-                  Open line
-                </button>
-                <button class="shape-mode-button is-active" data-shape="closed" type="button">
-                  Closed region
-                </button>
-              </div>
-              <div class="button-row">
-                <button id="finishDraftButton" type="button">Finish Region</button>
-                <button id="cancelDraftButton" class="danger" type="button">Cancel</button>
-              </div>
-              <div class="shape-hint" id="shapeHint">face outline: closed region mode.</div>
-            </section>
-
-            <section class="section" id="refineToolsSection" hidden>
-              <div class="section-title">Refine contour</div>
-              <label class="switch">
-                <span class="switch-label">Smooth edit</span>
-                <input id="softDragToggle" type="checkbox" checked />
-                <span class="switch-track" aria-hidden="true"></span>
-              </label>
-              <label class="switch" style="margin-top: 8px">
-                <span class="switch-label">Show points</span>
-                <input id="showPointsToggle" type="checkbox" />
-                <span class="switch-track" aria-hidden="true"></span>
-              </label>
-              <div class="range-row">
-                <strong>Influence</strong>
-                <span id="softRadiusValue">40 px</span>
-              </div>
-              <input
-                id="softRadiusInput"
-                class="range-input"
-                type="range"
-                min="4"
-                max="96"
-                step="4"
-                value="40"
-              />
-              <div class="button-row compact" style="margin-top: 10px">
-                <button id="densifyButton" type="button">Add curve points</button>
-              </div>
-            </section>
-
-            <section class="section more-actions-section">
-              <details class="sidebar-disclosure" id="moreActionsDisclosure">
-                <summary>More actions</summary>
-                <div class="disclosure-body">
-                  <button id="initializeTemplateButton" type="button">Initialize features</button>
+            <section class="inspector-options">
+              <details class="advanced">
+                <summary>Advanced editing</summary>
+                <div class="advanced-body">
+                  <label><input id="softDragToggle" type="checkbox" /> Soft edit (Points)</label>
+                  <label><input id="showPointsToggle" type="checkbox" checked /> Show points</label>
+                  <div class="range-row"><label for="softRadiusInput">Soft radius</label><span id="softRadiusValue">40 px</span></div>
+                  <input id="softRadiusInput" type="range" min="4" max="96" step="4" value="40" />
+                </div>
+              </details>
+              <details class="workspace-menu object-menu" id="moreActionsDisclosure">
+                <summary>Contour actions</summary>
+                <div class="menu-panel">
+                  <button id="deleteButton" class="danger" type="button">Delete contour</button>
                   <button id="clearButton" class="danger" type="button">Clear all contours</button>
                 </div>
               </details>
             </section>
           </div>
+        </aside>
+      </div>
+      <footer class="task-bar" id="imageWorkflowSection">
+        <details class="workspace-menu queue-disclosure" id="imageQueueDisclosure">
+          <summary>Image queue</summary>
+          <div class="menu-panel queue-panel">
+            <header><strong>Image queue</strong><span id="imageQueueSummary">0 images</span></header>
+            <div class="queue-list" id="imageQueueList"></div>
+            <div class="queue-pagination" id="queuePagination" hidden>
+              <button id="queuePreviousPage" type="button" aria-label="Previous page of images">Back</button>
+              <span id="queuePageLabel" aria-live="polite"></span>
+              <button id="queueNextPage" type="button" aria-label="Next page of images">More</button>
+            </div>
+          </div>
+        </details>
+        <div class="divider"></div>
+        <div class="navigation-buttons">
+          <button id="previousImageButton" type="button">Previous</button>
+          <button id="nextImageButton" type="button">Next</button>
         </div>
-
-        <section class="section actions-section" id="actionsSection" hidden>
-          <div class="section-title">Actions</div>
-          <div class="button-row three">
-            <button id="undoButton" type="button">Undo</button>
-            <button id="redoButton" type="button">Redo</button>
-            <button id="deleteButton" class="danger" type="button">Delete</button>
-          </div>
-        </section>
-      </aside>
-
-      <section class="workspace">
-        <header class="topbar">
-          <div class="file-meta" id="fileMeta">No image loaded</div>
-          <span class="pill" id="imageSize">0 x 0</span>
-          <div class="zoom-controls" aria-label="Image zoom controls">
-            <button
-              class="zoom-button"
-              id="zoomOutButton"
-              type="button"
-              title="Zoom image out"
-            >
-              -
-            </button>
-            <span class="pill zoom-value" id="zoomValue">Fit</span>
-            <button
-              class="zoom-button"
-              id="zoomInButton"
-              type="button"
-              title="Zoom image in"
-            >
-              +
-            </button>
-            <button
-              class="zoom-button"
-              id="zoomFitButton"
-              type="button"
-              title="Fit image to the workspace"
-            >
-              Fit
-            </button>
-          </div>
-          <span class="pill" id="cursorMeta">x 0, y 0</span>
-          <span class="pill" id="draftMeta">0 draft points</span>
-        </header>
-
-        <section class="stage-shell" id="stageShell">
-          <div class="canvas-wrap">
-            <canvas id="annotationCanvas" width="1" height="1"></canvas>
-          </div>
-          <div class="empty-state" id="emptyState">
-            <div class="empty-card">
-              <strong>Loading project image…</strong>
-            </div>
-          </div>
-        </section>
-
-        <footer class="statusbar" role="status" aria-live="polite">
-          <span id="statusText">Ready.</span>
-        </footer>
-      </section>
-
-      <aside class="inspector">
-        <header class="inspector-header">
-          <h2>Contours</h2>
-          <span class="pill" id="contourCount">0 contours</span>
-        </header>
-
-        <section class="contour-list" id="contourList"></section>
-
-        <section class="transfer-panel" aria-label="Annotation file">
-          <div class="transfer-group">
-            <h3 class="transfer-title">Annotation file</h3>
-            <p class="transfer-help" id="annotationImportHelp">
-              One JSON contains this project's relative paths, progress, and contours. Imports match by path and image size.
-            </p>
-            <div class="button-row">
-              <button id="exportAnnotationsButton" type="button">Export JSON</button>
-              <button
-                id="importAnnotationsButton"
-                type="button"
-                aria-describedby="annotationImportHelp"
-              >
-                Import JSON
-              </button>
-            </div>
-          </div>
-
-          <input
-            id="annotationFileInput"
-            type="file"
-            accept="application/json,.face-contour-annotations.json,.json"
-            hidden
-          />
-          <details id="annotationImportReport" class="import-report" hidden>
-            <summary id="annotationImportSummary">Import report</summary>
-            <div class="match-list">
-              <ul id="annotationImportIssues"></ul>
-            </div>
-          </details>
-          <details class="export-debug">
-            <summary>Preview annotation JSON</summary>
-            <textarea class="json-output" id="jsonOutput" readonly spellcheck="false"></textarea>
-          </details>
-        </section>
-      </aside>
+        <span class="position" id="projectPosition">0 / 0</span>
+        <span class="task-status" id="currentImageStatus">Not reviewed</span>
+        <div class="task-actions">
+          <button id="skipImageButton" type="button">Skip</button>
+          <button id="needsReviewButton" type="button">Review</button>
+          <button class="primary-button" id="markDoneButton" type="button">Done</button>
+        </div>
+      </footer>
+      <input id="annotationFileInput" type="file" accept="application/json,.face-contour-annotations.json,.json" hidden />
     </main>
 
     <script src="./vendor/fflate-0.8.3.js"></script>
-    <script type="module" src="./src/app.js?v=folder-workspace-1"></script>
+    <script type="module" src="./src/app.js?v=workspace-ux-1"></script>
   </body>
 </html>
 

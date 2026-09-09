@@ -1,4 +1,5 @@
-import { finiteNumber, normalizePointToImage } from "./geometry.js";
+import { finiteNumber, normalizePointToImage } from "./geometry.js?v=workspace-ux-1";
+import { contourPolyline, materializeContour, validateCurve } from "./contour-editing.js?v=workspace-ux-1";
 
 function getShapeType(closed) {
   return closed ? "polygon" : "linestrip";
@@ -38,16 +39,15 @@ export function buildTaskSchema(labels) {
 }
 
 function serializeContour(contour, labels) {
+  const editable = materializeContour(contour);
   return {
     id: contour.id,
     label: contour.label,
     labelName: labels.find((item) => item.id === contour.label)?.name || contour.label,
     closed: Boolean(contour.closed),
     shape_type: getShapeType(contour.closed),
-    points: contour.points.map((point) => ({
-      x: Math.round(point.x),
-      y: Math.round(point.y),
-    })),
+    points: contourPolyline(editable),
+    curve: { version: 1, anchors: editable.points, segments: editable.segments },
   };
 }
 
@@ -123,12 +123,37 @@ export function normalizeImportedContours({
     if (!getAllowedShapeTypes(label).includes(shapeType)) {
       throw new Error(`${label.name} does not allow ${shapeType} shapes.`);
     }
-    return {
+    const normalized = {
       id: typeof contour.id === "string" ? contour.id : createId(),
       label: label.id,
       closed,
       points: contour.points.map((point) => normalizeImportedPoint(point, imageSize)),
     };
+    if (contour.curve !== undefined || contour.segments !== undefined) {
+      const curve = contour.curve;
+      if (curve && curve.version !== 1) throw new Error("Unsupported editable curve version.");
+      const anchors = curve ? curve.anchors : contour.points;
+      if (!Array.isArray(anchors) || anchors.length < getMinimumPoints(closed, minOpenPoints, minClosedPoints) || anchors.length > 100000 ||
+          !anchors.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y) && p.x >= 0 && p.y >= 0 && p.x <= imageSize.width && p.y <= imageSize.height)) {
+        throw new Error("Curve anchors must be finite coordinates inside the image.");
+      }
+      normalized.points = anchors.map((p) => ({ ...p }));
+      normalized.segments = structuredClone(curve ? curve.segments : contour.segments);
+      validateCurve(normalized);
+      if (normalized.segments.some((s) => [s.control1, s.control2].some((p) => Math.abs(p.x) > imageSize.width * 4 || Math.abs(p.y) > imageSize.height * 4))) {
+        throw new Error("Curve controls exceed the image working range.");
+      }
+      if (curve) {
+        const projection = contourPolyline(normalized);
+        if (projection.length !== contour.points.length || projection.some((p, i) => !Number.isFinite(contour.points[i]?.x) || !Number.isFinite(contour.points[i]?.y) || Math.hypot(p.x - contour.points[i].x, p.y - contour.points[i].y) > 0.000001)) {
+          throw new Error("Contour points do not match the saved editable curve.");
+        }
+      }
+    }
+    // Validate render/export complexity before any caller persists a replacement.
+    // Historical anchor-only input must pass the same budget as editable v2 data.
+    if (!contour.curve) contourPolyline(normalized);
+    return normalized;
   });
 }
 

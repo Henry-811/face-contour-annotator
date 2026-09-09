@@ -1,7 +1,7 @@
-import { LABELS, MAX_IMAGE_SET_ENTRIES, MAX_ANNOTATION_FILE_BYTES, MIN_ANNOTATION_IMAGE_SIDE } from "./config.js";
-import { normalizeAnnotationRelativePath } from "./annotation-transfer.js";
-import { buildTaskSchema, normalizeImportedContours } from "./exporter.js";
-import { createAnnotationProject, createLocalProjectKey, isImageStatus } from "./project.js";
+import { LABELS, MAX_IMAGE_SET_ENTRIES, MAX_ANNOTATION_FILE_BYTES, MIN_ANNOTATION_IMAGE_SIDE } from "./config.js?v=workspace-ux-1";
+import { normalizeAnnotationRelativePath } from "./annotation-transfer.js?v=workspace-ux-1";
+import { buildTaskSchema, normalizeImportedContours, serializeContours } from "./exporter.js?v=workspace-ux-1";
+import { createAnnotationProject, createLocalProjectKey, isImageStatus } from "./project.js?v=workspace-ux-1";
 
 export const FOLDER_PROJECT_PREFIX = "folder:";
 export const FOLDER_IMAGE_KIND = "face-contour-folder-image";
@@ -183,7 +183,7 @@ function annotationPath(path) {
 }
 
 export function validateFolderImage({ data, path }) {
-  if (data?.kind !== FOLDER_IMAGE_KIND || data.version !== 1 || data.relativePath !== path ||
+  if (data?.kind !== FOLDER_IMAGE_KIND || ![1, 2].includes(data.version) || data.relativePath !== path ||
       !Number.isInteger(data.width) || !Number.isInteger(data.height) ||
       data.width < MIN_ANNOTATION_IMAGE_SIDE || data.height < MIN_ANNOTATION_IMAGE_SIDE ||
       data.width * data.height > MAX_FOLDER_IMAGE_PIXELS || !isImageStatus(data.status) ||
@@ -195,13 +195,16 @@ export function validateFolderImage({ data, path }) {
   const contours = normalizeImportedContours({
     contours: data.contours, labels: LABELS, imageSize: { width: data.width, height: data.height }, createId: createLocalProjectKey,
   });
+  if (data.version === 2 && data.contours.some((contour) => !contour.curve)) {
+    throw new FolderWorkspaceError({ code: "FOLDER_INVALID_RECORD", message: `Missing editable curve data in ${path}.` });
+  }
   if (data.status === "done" && !contours.length) {
     throw new FolderWorkspaceError({ code: "FOLDER_INVALID_RECORD", message: `${path}: Done requires at least one contour.` });
   }
   const ids = new Set();
   for (const contour of data.contours) {
     if (typeof contour.id !== "string" || !contour.id || ids.has(contour.id) ||
-        contour.points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x > data.width || point.y > data.height)) {
+        contour.points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y) || (data.version === 1 && (point.x < 0 || point.y < 0 || point.x > data.width || point.y > data.height)))) {
       throw new FolderWorkspaceError({ code: "FOLDER_INVALID_RECORD", message: `Invalid contour coordinates or IDs in ${path}.` });
     }
     ids.add(contour.id);
@@ -216,7 +219,7 @@ export function validateFolderImage({ data, path }) {
   }
   // Existing importer validation rounds to image pixels. Folder saves preserve
   // the editor's fractional coordinates across reopen instead.
-  return { ...data, contours: contours.map((contour, index) => ({ ...contour, points: data.contours[index].points.map((point) => ({ x: point.x, y: point.y })) })), draft };
+  return { ...data, contours: data.version === 2 ? contours : contours.map((contour, index) => ({ ...contour, points: data.contours[index].points.map((point) => ({ x: point.x, y: point.y })) })), draft };
 }
 
 async function acquireWorkspaceLock(id) {
@@ -310,8 +313,8 @@ export async function openFolderWorkspace({ sourceHandle, outputHandle, onProgre
       },
       buildImageFile(image) {
         if (!current || current.path !== image.path) throw new FolderWorkspaceError({ code: "FOLDER_MISSING", message: "Load the image before saving its annotations." });
-        return { kind: FOLDER_IMAGE_KIND, version: 1, relativePath: image.path, source: { ...current.source }, width: image.width, height: image.height, status: image.status,
-          contours: image.contours, selectedId: image.selectedId, draft: image.draft, revision: createLocalProjectKey(), updatedAt: new Date().toISOString() };
+        return { kind: FOLDER_IMAGE_KIND, version: 2, relativePath: image.path, source: { ...current.source }, width: image.width, height: image.height, status: image.status,
+          contours: serializeContours(image.contours || [], LABELS), selectedId: image.selectedId, draft: image.draft, revision: createLocalProjectKey(), updatedAt: new Date().toISOString() };
       },
       async saveImage({ image, preferences }) {
         if (closed) throw new FolderWorkspaceError({ code: "FOLDER_CLOSED", message: "The folder workspace was closed before saving." });

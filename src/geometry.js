@@ -4,10 +4,7 @@ export function finiteNumber(value, fallback = 0) {
 }
 
 export function cloneContours(contours) {
-  return contours.map((contour) => ({
-    ...contour,
-    points: contour.points.map((point) => ({ ...point })),
-  }));
+  return structuredClone(contours);
 }
 
 export function clamp(value, min, max) {

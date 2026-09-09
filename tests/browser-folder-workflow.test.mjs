@@ -82,6 +82,22 @@ try {
   assert.equal(first.contours.length, 9);
   assert.equal(first.source.size, 20 * 1024 * 1024);
   assert.equal(first.source.sha256.length, 64);
+  await client.evaluate('document.querySelector("[data-edit-tool=points]").click(); document.querySelector(".contour-item").click()');
+  const deletionPoint = await client.evaluate(`(() => {
+    const point = JSON.parse(document.querySelector("#jsonOutput").value).contours[0].curve.anchors[1];
+    const rect = document.querySelector("#annotationCanvas").getBoundingClientRect();
+    return { x: rect.x + point.x * rect.width / 512, y: rect.y + point.y * rect.height / 512 };
+  })()`);
+  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", ...deletionPoint, button: "left", buttons: 1, clickCount: 1 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...deletionPoint, button: "left", buttons: 0, clickCount: 1 });
+  await client.evaluate('document.querySelector("#deletePointButton").click(); window.__previewPrompts = 0; window.confirm = () => { window.__previewPrompts++; return false; }; document.querySelector("#nextImageButton").click()');
+  await waitFor(() => client.evaluate('!document.querySelector("#exitProjectButton").disabled'), "cancelled deletion-preview navigation");
+  assert.equal(await client.evaluate('document.querySelector("#projectPosition").textContent'), "1 / 103");
+  assert.equal(await client.evaluate('document.querySelector("#deletePreviewActions").hidden'), false);
+  assert.equal(await client.evaluate('window.__previewPrompts'), 1);
+  assert.deepEqual((await readSaved()).contours, first.contours, "Unapplied deletion must never reach disk during navigation");
+  await client.evaluate('document.querySelector("#cancelDeleteButton").click(); window.confirm = () => true');
+  await waitFor(saved, "deletion preview cancelled");
   await client.evaluate('document.querySelector("#deleteButton").click(); document.querySelector(".mode-button[data-mode=draw]").click()');
   await client.evaluate(`(() => {
     const canvas = document.querySelector("#annotationCanvas"), r = canvas.getBoundingClientRect();
@@ -92,7 +108,7 @@ try {
   assert.equal(edited.contours.length, 8);
   assert.equal(edited.draft.points.length, 2);
   // Pause real image reading after the outgoing image's save barrier. Every
-  // sidebar editing path must remain frozen until the incoming image commits.
+  // All editing controls stay frozen until the incoming image commits.
   await client.evaluate(`(() => {
     window.__normalRead = Blob.prototype.arrayBuffer;
     Blob.prototype.arrayBuffer = async function(...args) {
@@ -102,24 +118,26 @@ try {
       return window.__normalRead.apply(this, args);
     };
   })()`);
-  await client.evaluate('document.querySelector("#nextImageButton").click()');
+  await client.evaluate('document.querySelector("#imageQueueDisclosure").open = true; const next = document.querySelectorAll("#imageQueueList button")[1]; next.focus(); next.click()');
   await waitFor(() => client.evaluate('typeof window.__releaseImageRead === "function"'), "paused next image read");
   const duringRead = await client.evaluate(`(() => {
     const before = document.querySelector("#jsonOutput").value;
     const item = document.querySelector(".contour-item");
-    const select = item.querySelector("select");
-    const disabled = [...document.querySelectorAll("#labelGrid button, #contourList button, #contourList select")].every((control) => control.disabled);
-    item.querySelector(".small-button").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    const select = document.querySelector("#selectedContourLabel");
+    const disabled = [...document.querySelectorAll("#newContourLabel, #selectedContourLabel, #contourList button, #deleteButton")].every((control) => control.disabled);
+    document.querySelector("#deleteButton").dispatchEvent(new MouseEvent("click", { bubbles: true }));
     select.value = "face_outline";
     select.dispatchEvent(new Event("change", { bubbles: true }));
     item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    document.querySelector("#labelGrid button").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    document.querySelector("#newContourLabel").dispatchEvent(new Event("change", { bubbles: true }));
     return { disabled, unchanged: before === document.querySelector("#jsonOutput").value };
   })()`);
   assert.deepEqual(duringRead, { disabled: true, unchanged: true });
   await client.evaluate('window.__releaseImageRead(); Blob.prototype.arrayBuffer = window.__normalRead');
   await waitFor(() => client.evaluate('document.querySelector("#projectPosition").textContent === "2 / 103" && document.querySelector("#projectSaveState").dataset.state === "saved"'), "next image");
-  assert.equal(await client.evaluate('[...document.querySelectorAll("#labelGrid button, #contourList button, #contourList select")].every((control) => !control.disabled)'), true, "Sidebar editing must be enabled after switching");
+  assert.equal(await client.evaluate('document.querySelector("#imageQueueDisclosure").open'), false);
+  assert.equal(await client.evaluate('document.activeElement.parentElement.id'), "imageQueueDisclosure", "Queue navigation restores focus after rebuilding the list");
+  assert.equal(await client.evaluate('[...document.querySelectorAll("#newContourLabel, #selectedContourLabel, #contourList button")].every((control) => !control.disabled)'), true, "Editing must be enabled after switching");
   await client.evaluate('document.querySelector("#markDoneButton").click()');
   await waitFor(saved, "second image marked done");
   await client.evaluate(`(() => {
@@ -186,6 +204,10 @@ try {
     document.querySelector("#skipImageButton").click();
   })()`);
   await waitFor(() => client.evaluate('document.querySelector("#projectSaveState").dataset.state === "failed"'), "external modification conflict");
+  assert.equal(await client.evaluate('document.querySelector("#saveErrorBanner").hidden'), false);
+  assert.ok(await client.evaluate('document.querySelector("#saveErrorReason").textContent.length > 0'));
+  assert.equal(await client.evaluate('document.querySelector("#retrySaveButton").disabled'), false);
+  assert.equal(await client.evaluate('document.querySelector("#backupAnnotationsButton").disabled'), false);
   assert.equal((await readSaved()).status, "needs_review");
   await client.evaluate('window.confirm = () => true; document.querySelector("#exitProjectButton").click()');
   await waitFor(() => client.evaluate('!document.querySelector("#projectHubView").hidden && !document.querySelector("#openDirectoryButton").disabled'), "exit with warning");
@@ -264,6 +286,9 @@ try {
   // Restoring the downloaded per-image format follows the real input/coordinator.
   await client.evaluate(`(() => {
     const data = JSON.parse(document.querySelector("#jsonOutput").value);
+    // Exercise historical anchor-only input migration with fractional precision.
+    data.version = 1;
+    data.contours = data.contours.map(({ curve, ...contour }) => ({ ...contour, points: curve.anchors }));
     data.contours[0].points[0] = { x: 10.25, y: 20.75 };
     const transfer = new DataTransfer();
     transfer.items.add(new File([JSON.stringify(data)], "current.json", { type: "application/json" }));

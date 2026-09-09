@@ -4,8 +4,9 @@ import {
   HANDLE_STROKE_WIDTH,
   SELECTED_CONTOUR_HALO_WIDTH,
   SELECTED_CONTOUR_LINE_WIDTH,
-} from "./config.js";
-import { getContourSegments, getInterpolatingCurveSegments } from "./geometry.js";
+} from "./config.js?v=workspace-ux-1";
+import { getContourSegments } from "./geometry.js?v=workspace-ux-1";
+import { contourPolyline, transformHandles, sampleContour } from "./contour-editing.js?v=workspace-ux-1";
 
 const LABEL_GAP = 5;
 const LABEL_COLLISION_GAP = 3;
@@ -17,6 +18,8 @@ const LABEL_LINE_COLLISION_WEIGHT = 10000;
 const LABEL_LABEL_COLLISION_WEIGHT = 100000;
 const GEOMETRY_EPSILON = 0.000001;
 const CANVAS_PADDING = 36;
+const EDIT_HANDLE_RADIUS = 2.8;
+const SELECTED_HANDLE_RADIUS = 4.5;
 const MAX_FIT_SCALE = 1.75;
 const MIN_CANVAS_SCALE = 0.08;
 
@@ -287,7 +290,7 @@ export function getDisplayContourEntries({
   ctx.font = "12px system-ui, sans-serif";
   const displayContours = contours
     .map((contour) => {
-      const displayPoints = contour.points.map((point) => toDisplayPoint(point, scale));
+      const displayPoints = contourPolyline(contour).map((point) => toDisplayPoint(point, scale));
       if (!displayPoints.length) {
         return null;
       }
@@ -305,10 +308,11 @@ export function getDisplayContourEntries({
     })
     .filter(Boolean);
   ctx.restore();
-  return getContourLabelPlacements(displayContours, {
+  const labeled = getContourLabelPlacements(displayContours.filter((entry) => entry.isSelected), {
     canvasHeight,
     canvasWidth,
   });
+  return displayContours.map((entry) => labeled.find((candidate) => candidate.contour.id === entry.contour.id) || entry);
 }
 
 function syncCanvasBackingStore(canvas, dpr) {
@@ -329,16 +333,7 @@ function drawSmoothPath(ctx, displayPoints, closed) {
   }
   ctx.beginPath();
   ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
-  getInterpolatingCurveSegments(displayPoints, closed).forEach((segment) => {
-    ctx.bezierCurveTo(
-      segment.control1.x,
-      segment.control1.y,
-      segment.control2.x,
-      segment.control2.y,
-      segment.end.x,
-      segment.end.y,
-    );
-  });
+  displayPoints.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
   if (closed) {
     ctx.closePath();
   }
@@ -358,9 +353,6 @@ function drawContourPath(ctx, { closed, displayPoints, isSelected, label }) {
   ctx.fillStyle = `${label.color}24`;
   ctx.strokeStyle = label.color;
   ctx.lineWidth = isSelected ? SELECTED_CONTOUR_LINE_WIDTH : CONTOUR_LINE_WIDTH;
-  if (closed) {
-    ctx.fill();
-  }
   ctx.stroke();
   ctx.restore();
 }
@@ -375,19 +367,15 @@ function drawContourLabel(ctx, { label, labelRect }) {
   ctx.restore();
 }
 
-function drawContourHandles(ctx, { closed, displayPoints, label, maxControlHandles, pointRadius }) {
-  const handleStride = Math.max(1, Math.ceil(displayPoints.length / maxControlHandles));
+function drawContourHandles(ctx, { closed, displayPoints, label, pointRadius, selectedPointIndex }) {
   ctx.save();
   displayPoints.forEach((point, pointIndex) => {
     const isEndpoint = !closed && (pointIndex === 0 || pointIndex === displayPoints.length - 1);
-    if (pointIndex % handleStride !== 0 && !isEndpoint) {
-      return;
-    }
     ctx.beginPath();
-    ctx.arc(point.x, point.y, isEndpoint ? pointRadius + 1 : pointRadius, 0, Math.PI * 2);
-    ctx.fillStyle = isEndpoint ? "#ffffff" : label.color;
-    ctx.strokeStyle = label.color;
-    ctx.lineWidth = HANDLE_STROKE_WIDTH;
+    ctx.arc(point.x, point.y, pointIndex === selectedPointIndex ? SELECTED_HANDLE_RADIUS : Math.max(EDIT_HANDLE_RADIUS, pointRadius), 0, Math.PI * 2);
+    ctx.fillStyle = pointIndex === selectedPointIndex || isEndpoint ? "#ffffff" : label.color;
+    ctx.strokeStyle = pointIndex === selectedPointIndex || isEndpoint ? label.color : "#ffffff";
+    ctx.lineWidth = pointIndex === selectedPointIndex ? HANDLE_STROKE_WIDTH : 1;
     ctx.fill();
     ctx.stroke();
   });
@@ -436,8 +424,11 @@ export function getFitCanvasScale({ stageShell, image }) {
   if (!image) {
     return null;
   }
-  const maxWidth = Math.max(240, stageShell.clientWidth - CANVAS_PADDING);
-  const maxHeight = Math.max(240, stageShell.clientHeight - CANVAS_PADDING);
+  const style = stageShell.ownerDocument?.defaultView?.getComputedStyle(stageShell);
+  const paddingX = style ? parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) : CANVAS_PADDING;
+  const paddingY = style ? parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) : CANVAS_PADDING;
+  const maxWidth = Math.max(240, stageShell.clientWidth - paddingX);
+  const maxHeight = Math.max(240, stageShell.clientHeight - paddingY);
   const scale = Math.min(
     maxWidth / image.naturalWidth,
     maxHeight / image.naturalHeight,
@@ -477,7 +468,7 @@ export function drawAnnotationCanvas({
   labels,
   showPoints,
   pointRadius,
-  maxControlHandles,
+  editor = {},
 }) {
   const dpr = window.devicePixelRatio || 1;
   const { cssWidth, cssHeight } = syncCanvasBackingStore(canvas, dpr);
@@ -497,15 +488,88 @@ export function drawAnnotationCanvas({
     canvasHeight: cssHeight,
   });
   displayEntries.forEach((entry) => drawContourPath(ctx, entry));
-  displayEntries.forEach((entry) => drawContourLabel(ctx, entry));
+  displayEntries.filter((entry) => entry.isSelected).forEach((entry) => drawContourLabel(ctx, entry));
   displayEntries.forEach((entry) => {
     if (entry.isSelected && showPoints) {
       drawContourHandles(ctx, {
         ...entry,
-        maxControlHandles,
+        displayPoints: entry.contour.points.map((p) => toDisplayPoint(p, scale)),
+        selectedPointIndex: editor.selectedPointIndex,
         pointRadius,
       });
     }
   });
   drawDraft(ctx, draftPoints, hoverPoint, { activeLabel, labels, pointRadius, scale });
+  drawEditorOverlay({ ctx, contours, selectedId, scale, editor, labels, activeLabel, pointRadius, imageSize: { width: image.naturalWidth, height: image.naturalHeight } });
+}
+
+function drawEditorOverlay({ ctx, contours, selectedId, scale, editor, labels, activeLabel, pointRadius, imageSize }) {
+  const selected = contours.find((c) => c.id === selectedId);
+  if (!selected) return;
+  ctx.save();
+  if (editor.addPointCandidate) {
+    const point = toDisplayPoint(editor.addPointCandidate, scale);
+    ctx.beginPath(); ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = "white"; ctx.fill(); ctx.strokeStyle = "#087e6b"; ctx.lineWidth = 2; ctx.stroke();
+  }
+  if (editor.deletePreview) {
+    drawSmoothPath(ctx, contourPolyline(selected).map((point) => toDisplayPoint(point, scale)), selected.closed);
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = "#a23c26"; ctx.lineWidth = 2; ctx.stroke();
+    ctx.setLineDash([]);
+    drawSmoothPath(ctx, contourPolyline(editor.deletePreview).map((point) => toDisplayPoint(point, scale)), selected.closed);
+    ctx.strokeStyle = "white"; ctx.lineWidth = 5; ctx.stroke();
+    ctx.strokeStyle = "#087e6b"; ctx.lineWidth = 2; ctx.stroke();
+  }
+  if (editor.tool === "transform") {
+    const { bounds: b, handles, rotationBase } = transformHandles({ contour: selected, scale, imageSize });
+    ctx.strokeStyle = "#087e6b";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(b.minX * scale, b.minY * scale, (b.maxX - b.minX) * scale, (b.maxY - b.minY) * scale);
+    ctx.setLineDash([]);
+    const rotate = handles.at(-1).point;
+    ctx.beginPath(); ctx.moveTo(rotate.x * scale, rotate.y * scale); ctx.lineTo(rotationBase.x * scale, rotationBase.y * scale); ctx.stroke();
+    for (const handle of handles) {
+      const p = toDisplayPoint(handle.point, scale);
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      if (handle.name === "rotate") ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+      else ctx.rect(p.x - 4, p.y - 4, 8, 8);
+      ctx.fill(); ctx.stroke();
+    }
+  }
+  if (editor.softPoint && editor.softRadius) {
+    const samples = sampleContour(selected);
+    let closest = 0, best = Infinity, total = 0;
+    const offsets = [0];
+    samples.forEach((p, i) => {
+      const d = Math.hypot(p.x - editor.softPoint.x, p.y - editor.softPoint.y);
+      if (d < best) { best = d; closest = i; }
+      if (i) { total += Math.hypot(p.x - samples[i - 1].x, p.y - samples[i - 1].y); offsets.push(total); }
+    });
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.7)"; ctx.lineWidth = 8; ctx.beginPath();
+    let active = false;
+    samples.forEach((p, i) => {
+      let d = Math.abs(offsets[i] - offsets[closest]);
+      if (selected.closed) d = Math.min(d, total - d);
+      if (d > editor.softRadius) { active = false; return; }
+      const display = toDisplayPoint(p, scale);
+      if (!active) ctx.moveTo(display.x, display.y); else ctx.lineTo(display.x, display.y);
+      active = true;
+    });
+    ctx.stroke();
+  }
+  if (editor.redraw) {
+    const { preview, startPoint, points } = editor.redraw;
+    if (preview) {
+      drawSmoothPath(ctx, contourPolyline(preview.contour).map((p) => toDisplayPoint(p, scale)), selected.closed);
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.stroke();
+      ctx.strokeStyle = "#087e6b"; ctx.lineWidth = 2; ctx.stroke();
+      drawSmoothPath(ctx, contourPolyline(preview.replaced).map((p) => toDisplayPoint(p, scale)), false);
+      ctx.setLineDash([6, 5]); ctx.strokeStyle = "#dc4827"; ctx.lineWidth = 3; ctx.stroke(); ctx.setLineDash([]);
+    } else {
+      drawDraft(ctx, [startPoint, ...points], editor.hoverPoint, { labels, activeLabel, scale, pointRadius });
+    }
+  }
+  ctx.restore();
 }

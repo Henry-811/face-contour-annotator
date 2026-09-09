@@ -1024,11 +1024,10 @@ try {
     const annotationControls = [
       "exitProjectButton",
       "needsReviewButton",
-      "labelGrid",
+      "initializeTemplateButton",
       "imageQueueDisclosure",
       "annotationCanvas",
-      "importAnnotationsButton",
-      "exportAnnotationsButton",
+      "fileMenu",
     ];
     return {
       sourceRectCounts: Object.fromEntries(
@@ -1047,6 +1046,9 @@ try {
     Object.values(focusedWorkspaceVisibility.annotationRectCounts).every((count) => count > 0),
     true,
   );
+  await client.evaluate('document.querySelector("#fileMenu").open = true');
+  assert.equal(await client.evaluate('["importAnnotationsButton", "exportAnnotationsButton"].every((id) => document.getElementById(id).getClientRects().length > 0)'), true);
+  await client.evaluate('document.querySelector("#fileMenu").open = false');
 
   await client.send("Emulation.setDeviceMetricsOverride", {
     width: 390,
@@ -1058,59 +1060,22 @@ try {
     () => client.evaluate("window.innerWidth === 390 && window.innerHeight === 844"),
     "the 390 by 844 workspace viewport",
   );
-  const mobileScrollPlan = await client.evaluate(`(() => {
-    const sidebar = document.querySelector(".sidebar");
-    const header = document.querySelector(".workspace-project-header");
-    const maximumScroll = document.documentElement.scrollHeight - window.innerHeight;
-    const maximumStickyScroll =
-      sidebar.offsetTop + sidebar.offsetHeight - header.offsetHeight - 1;
-    const targetScroll = Math.max(
-      1,
-      Math.min(
-        Math.floor(maximumScroll / 2),
-        Math.floor(maximumStickyScroll / 2),
-      ),
-    );
-    window.scrollTo(0, targetScroll);
-    return { maximumScroll, maximumStickyScroll, targetScroll };
-  })()`);
-  await waitFor(
-    () =>
-      client.evaluate(
-        `Math.abs(window.scrollY - ${JSON.stringify(mobileScrollPlan.targetScroll)}) <= 1`,
-      ),
-    "the mobile workspace to scroll",
-  );
-  assert.equal(mobileScrollPlan.maximumScroll > 0, true);
-  assert.equal(mobileScrollPlan.maximumStickyScroll > 0, true);
   const mobileWorkspaceEvidence = await client.evaluate(`(() => {
-    const header = document.querySelector(".workspace-project-header");
-    const exitButton = document.querySelector("#exitProjectButton");
-    const headerBounds = header.getBoundingClientRect();
-    const exitBounds = exitButton.getBoundingClientRect();
+    const visible = (selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight; };
     return {
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      scrollY: window.scrollY,
-      headerTop: headerBounds.top,
-      exitTop: exitBounds.top,
-      exitBottom: exitBounds.bottom,
-      exitDisplay: getComputedStyle(exitButton).display,
-      horizontalOverflow:
-        document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+      verticalOverflow: document.documentElement.scrollHeight > innerHeight + 1,
+      exitVisible: visible("#exitProjectButton"),
+      initializeVisible: visible("#initializeTemplateButton"),
+      nextVisible: visible("#nextImageButton"),
+      inspectorToggleVisible: visible("#inspectorToggle"),
     };
   })()`);
-  assert.equal(mobileWorkspaceEvidence.viewportWidth, 390);
-  assert.equal(mobileWorkspaceEvidence.viewportHeight, 844);
-  assert.equal(mobileWorkspaceEvidence.scrollY > 0, true);
-  assert.equal(Math.abs(mobileWorkspaceEvidence.headerTop) <= 1, true);
-  assert.notEqual(mobileWorkspaceEvidence.exitDisplay, "none");
-  assert.equal(mobileWorkspaceEvidence.exitTop >= 0, true);
-  assert.equal(
-    mobileWorkspaceEvidence.exitBottom <= mobileWorkspaceEvidence.viewportHeight,
-    true,
-  );
-  assert.equal(mobileWorkspaceEvidence.horizontalOverflow, false);
+  assert.deepEqual(mobileWorkspaceEvidence, { horizontalOverflow: false, verticalOverflow: false, exitVisible: true, initializeVisible: true, nextVisible: true, inspectorToggleVisible: true });
+  await client.evaluate('document.querySelector("#inspectorToggle").click()');
+  assert.equal(await client.evaluate('getComputedStyle(document.querySelector("#contourInspector")).display'), "flex");
+  await client.evaluate('document.querySelector("#closeInspector").click()');
+  assert.equal(await client.evaluate('document.activeElement.id'), "inspectorToggle");
   await client.send("Emulation.setDeviceMetricsOverride", {
     width: 1440,
     height: 1000,

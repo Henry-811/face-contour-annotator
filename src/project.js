@@ -40,10 +40,7 @@ export function getFilePath(file) {
 }
 
 export function cloneProjectContours(contours = []) {
-  return contours.map((contour) => ({
-    ...contour,
-    points: contour.points.map((point) => ({ ...point })),
-  }));
+  return structuredClone(contours);
 }
 
 export function toProjectImageMetadata(image) {
